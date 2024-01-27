@@ -1,7 +1,7 @@
 [project]
 name = "cloudknot"
 dynamic = ["version"]
-requires-python = ">=3.7"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" }]
 maintainers = [
@@ -20,12 +20,12 @@ classifiers = [
 ]
 dependencies = [
 	"awscli",
-	"boto3>=1.5.21",
-	"botocore>=1.8.36",
+	"boto3",
+	"botocore",
 	"cloudpickle",
-	"docker>=3.0.0",
-	"pipreqs>=0.4.11",
-	"tenacity>=6.3.0"
+	"docker",
+	"pipreqs",
+	"tenacity"
 ]
 
 [project.urls]
@@ -34,26 +34,26 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-	"black==20.8b1",
-	"coverage==5.3",
-	"flake8==3.8.3",
-	"numpydoc==1.1.0",
-	"moto>=2.2.13.dev2",
-	"responses==0.12.0",
-	"pre-commit==2.9.2",
-	"pydocstyle==5.1.1",
-	"pytest-cov==2.10.1",
-	"pytest-xdist[psutil]==2.1.0",
-	"pytest==6.0.1",
-	"sphinx==3.2.1"
+	"black",
+	"coverage",
+	"flake8",
+	"numpydoc",
+	"moto",
+	"responses",
+	"pre-commit",
+	"pydocstyle",
+	"pytest-cov",
+	"pytest-xdist[psutil]",
+	"pytest",
+	"sphinx"
 ]
-maint = ["rapidfuzz==0.12.2"]
+maint = ["rapidfuzz"]
 
 [project.scripts]
 cloudknot = "cloudknot.cli:main"
 
 [build-system]
-requires = ["setuptools>=42", "wheel", "setuptools_scm[toml]>=3.4"]
+requires = ["setuptools", "wheel", "setuptools_scm[toml]"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
@@ -82,8 +82,8 @@ exclude = '''
     | \.pytest_cache
     | \.tox
     | \.venv
-    | cloudknot/data
-    | cloudknot.egg-info
+    | src/cloudknot/data
+    | src/cloudknot.egg-info
     | examples
     | doc
     | build
@@ -96,15 +96,10 @@ exclude = '''
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules"
-norecursedirs = "cloudknot/data"
+norecursedirs = "src/cloudknot/data"
 
 [tool.pydocstyle]
 convention = "numpy"
 match = "(?!_version).*\\.py"
 match-dir = "cloudknot"
 
-[tool.flake8]
-max-line-length = 88
-select = "C,E,F,W,B,B950"
-ignore = "E501,N802,N806,W503,E203"
-exclude = "setup.py,build,dist,doc,examples,cloudknot/data"

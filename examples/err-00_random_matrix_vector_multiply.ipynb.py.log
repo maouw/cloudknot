@@ -1,0 +1,85 @@
+BuildError                                Traceback (most recent call last)
+Cell In[4], line 1
+----> 1 knot = ck.Knot(name='random-mv-prod-a', base_image="python:3.11", func=random_mv_prod, memory=128, retries=3)
+
+File ~/work/proj/cloudknot/cloudknot/src/cloudknot/cloudknot.py:1365, in Knot.__init__(self, name, pars, pars_policies, docker_image, base_image, func, image_script_path, image_work_dir, image_github_installs, username, repo_name, image_tags, no_image_cache, job_definition_name, job_def_vcpus, memory, n_gpus, retries, compute_environment_name, instance_types, min_vcpus, max_vcpus, desired_vcpus, volume_size, image_id, ec2_key_pair, bid_percentage, job_queue_name, priority, aws_resource_tags)
+   1338 futures = {
+   1339     "pars": executor.submit(
+   1340         set_pars,
+   (...)
+   1358     ),
+   1359 }
+   1361 self._pars, pars_cleanup = futures["pars"].result()
+   1363 self._docker_image, self._docker_repo, repo_cleanup = futures[
+   1364     "docker-image"
+-> 1365 ].result()
+   1367 executor.shutdown()
+   1369 repo_uri = self.docker_image.repo_uri
+
+File ~/.asdf/installs/python/3.11.7/lib/python3.11/concurrent/futures/_base.py:449, in Future.result(self, timeout)
+    447     raise CancelledError()
+    448 elif self._state == FINISHED:
+--> 449     return self.__get_result()
+    451 self._condition.wait(timeout)
+    453 if self._state in [CANCELLED, CANCELLED_AND_NOTIFIED]:
+
+File ~/.asdf/installs/python/3.11.7/lib/python3.11/concurrent/futures/_base.py:401, in Future.__get_result(self)
+    399 if self._exception:
+    400     try:
+--> 401         raise self._exception
+    402     finally:
+    403         # Break a reference cycle with the exception in self._exception
+    404         self = None
+
+File ~/.asdf/installs/python/3.11.7/lib/python3.11/concurrent/futures/thread.py:58, in _WorkItem.run(self)
+     55     return
+     57 try:
+---> 58     result = self.fn(*self.args, **self.kwargs)
+     59 except BaseException as exc:
+     60     self.future.set_exception(exc)
+
+File ~/work/proj/cloudknot/cloudknot/src/cloudknot/cloudknot.py:1290, in Knot.__init__.<locals>.set_dockerimage(knot_name, input_docker_image, func_, script_path, work_dir, base_image_, github_installs, username_, tags, no_image_cache_, repo_name_)
+   1280     di = dockerimage.DockerImage(
+   1281         func=func_,
+   1282         script_path=script_path,
+   (...)
+   1286         username=username_,
+   1287     )
+   1289 if not di.images:
+-> 1290     di.build(tags=tags, nocache=no_image_cache)
+   1291     mod_logger.info(
+   1292         "knot {name:s} built docker image {i!s}"
+   1293         "".format(name=knot_name, i=di.images)
+   1294     )
+   1296 if di.repo_uri is None:
+   1297     # Create the remote repo
+
+File ~/work/proj/cloudknot/cloudknot/src/cloudknot/dockerimage.py:695, in DockerImage.build(self, tags, image_name, nocache)
+    688 for im in images:
+    689     mod_logger.info(
+    690         "Building image {name:s} with tag {tag:s}".format(
+    691             name=im["name"], tag=im["tag"]
+    692         )
+    693     )
+--> 695     c.images.build(
+    696         path=self.build_path,
+    697         dockerfile=self.docker_path,
+    698         tag=im["name"] + ":" + im["tag"],
+    699         rm=True,
+    700         forcerm=True,
+    701         nocache=nocache,
+    702     )
+    704 # Update the config file images list
+    705 config_file = get_config_file()
+
+File ~/work/proj/cloudknot/cloudknot/.venv/lib/python3.11/site-packages/docker/models/images.py:304, in ImageCollection.build(self, **kwargs)
+    302 for chunk in internal_stream:
+    303     if 'error' in chunk:
+--> 304         raise BuildError(chunk['error'], result_stream)
+    305     if 'stream' in chunk:
+    306         match = re.search(
+    307             r'(^Successfully built |sha256:)([0-9a-f]+)$',
+    308             chunk['stream']
+    309         )
+
+BuildError: The command '/bin/sh -c (id -u cloudknot-user >/dev/null 2>&1 || useradd cloudknot-user)     && addgroup cloudknot-user staff     && mkdir -p /home/cloudknot-user     && chown -R cloudknot-user:staff /home/cloudknot-user' returned a non-zero code: 1

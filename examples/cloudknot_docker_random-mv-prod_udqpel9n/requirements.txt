@@ -1,0 +1,7 @@
+boto3
+nibabel
+cloudpickle
+numpy
+s3fs
+pandas
+dipy

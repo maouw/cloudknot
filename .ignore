@@ -1,7 +1,7 @@
 *.pyc
 *~
 *.DS_Store
-_build/
+#_build/
 auto_examples/
 gen_api/
 doc/api/_autosummary
@@ -10,9 +10,7 @@ cloudknot/_version.py
 .coverage
 .cache
 .pytest_cache
-build/
+#build/
 src/cloudknot.egg-info/
 pip-wheel-metadata/
-dist/
-**Untitled*.ipynb
-*.sw?
+#dist/
