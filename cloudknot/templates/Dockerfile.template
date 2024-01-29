@@ -13,10 +13,8 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt${github_installs_string}
 # Create a default user. Available via runtime flag `--user ${username}`.
 # Add user to "staff" group.
 # Give user a home directory.
-RUN (id -u ${username} >/dev/null 2>&1 || useradd ${username}) \
-    && addgroup ${username} staff \
-    && mkdir -p /home/${username} \
-    && chown -R ${username}:staff /home/${username}
+RUN useradd --create-home -g staff cloudknot-user || \
+	echo "cloudknot-user already exists; skipping user creation." >&2
 
 ENV HOME /home/${username}
 
