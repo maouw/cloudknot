@@ -3,26 +3,35 @@
 # Based on ${base_image}
 ###############################################################################
 
+# Set a default base image for use if one is not passed in
+ARG base_image=python:3.7
+
 # Use official python base image
 FROM ${base_image}
 
-# Install python dependencies
-COPY requirements.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements.txt${github_installs_string}
+ARG github_installs_string=""
+ARG username=cloudknot
+ARG script_base_name=script.py
+
+# Install python dependencies from requirements.txt if it exists
+COPY requirements.tx[t] /tmp/
+RUN ( test -f "/tmp/requirements.txt" && echo 1 && pip install --no-cache-dir -r "/tmp/requirements.txt${github_installs_string}" ) || echo "No requirements.txt file found"
 
 # Create a default user. Available via runtime flag `--user ${username}`.
-# Add user to "staff" group.
-# Give user a home directory.
-RUN useradd --create-home -g staff cloudknot-user || \
-	echo "cloudknot-user already exists; skipping user creation." >&2
+# Create a staff group if it does not exist.
+# Create a user, add them to the staff group, and create their home directory.
+RUN groupadd -f staff && useradd --create-home --groups staff "${username}"
 
-ENV HOME /home/${username}
+# Copy the python script
+COPY --chown=${username} "${script_base_name}" "/home/${username}/"
+
+# Set the user to use when running this image
+USER "${username}"
 
 # Set working directory
 WORKDIR /home/${username}
 
 # Set entrypoint
-ENTRYPOINT ["python", "/home/${username}/${script_base_name}"]
+ENV __script_base_name__="${script_base_name}"
+ENTRYPOINT python "$__script_base_name__"
 
-# Copy the python script
-COPY ${script_base_name} /home/${username}/
