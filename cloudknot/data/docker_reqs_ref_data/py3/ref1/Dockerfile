@@ -6,25 +6,23 @@
 # Use official python base image
 FROM python:3
 
-# Install python dependencies
-COPY requirements.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Install python dependencies from requirements.txt if it exists
+COPY requirements.tx[t] /tmp/
+RUN ( test -f "/tmp/requirements.txt" && echo 1 && pip install --no-cache-dir -r "/tmp/requirements.txt" ) || echo "No requirements.txt file found"
 
 # Create a default user. Available via runtime flag `--user cloudknot-user`.
-# Add user to "staff" group.
-# Give user a home directory.
-RUN (id -u cloudknot-user >/dev/null 2>&1 || useradd cloudknot-user) \
-    && addgroup cloudknot-user staff \
-    && mkdir -p /home/cloudknot-user \
-    && chown -R cloudknot-user:staff /home/cloudknot-user
+# Create a staff group if it does not exist.
+# Create a user, add them to the staff group, and create their home directory.
+RUN groupadd -f staff && useradd --create-home --groups staff "cloudknot-user"
 
-ENV HOME /home/cloudknot-user
+# Copy the python script
+COPY --chown=cloudknot-user "unit-testing-func.py" "/home/cloudknot-user/"
+
+# Set the user to use when running this image
+USER "cloudknot-user"
 
 # Set working directory
-WORKDIR /home/cloudknot-user
+WORKDIR "/home/cloudknot-user"
 
 # Set entrypoint
 ENTRYPOINT ["python", "/home/cloudknot-user/unit-testing-func.py"]
-
-# Copy the python script
-COPY unit-testing-func.py /home/cloudknot-user/

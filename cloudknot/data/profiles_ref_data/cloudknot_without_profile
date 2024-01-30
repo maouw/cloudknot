@@ -1,1 +1,4 @@
+[aws]
+profile = name-5
+region = us-east-1
 
