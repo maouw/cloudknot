@@ -9,6 +9,7 @@ Ideally, the cloudknot user should never have to use these functions to
 interact with the cloudknot config file. Each cloudknot object maintains
 references to its state in the config file.
 """
+
 import botocore
 import configparser
 import docker
@@ -45,38 +46,26 @@ def get_config_file():
     config_file : string
         Path to cloudknot config file
     """
-    try:
-        # Get config file from environment variable
-        env_file = os.environ["CLOUDKNOT_CONFIG_FILE"]
-        config_file = os.path.abspath(env_file)
-    except KeyError:
-        # Fallback on default config file path
-        home = os.path.expanduser("~")
-        config_file = os.path.join(home, ".aws", "cloudknot")
-
+    
+    # Read config file from environment variable or use default location
+    #  in ~/.aws/cloudknot:
+    config_file = os.path.abspath(
+        os.getenv(
+            "CLOUDKNOT_CONFIG_FILE",
+            os.path.expanduser(os.path.join("~", ".aws", "cloudknot")),
+        )
+    )
+    
     with rlock:
+        # Create the directory if it doesn't exist:
+        os.path.makedirs(os.path.dirname(config_file), exist_ok=True)
         if not os.path.isfile(config_file):
-            # If the config directory does not exist, create it
-            configdir = os.path.dirname(config_file)
-            try:
-                os.makedirs(configdir)
-            except OSError as e:
-                pre_existing = e.errno == errno.EEXIST and os.path.isdir(configdir)
-                if pre_existing:
-                    pass
-                else:  # pragma: nocover
-                    raise e
-
-            # If the config file does not exist, create it
             with open(config_file, "w") as f:
                 f.write("# cloudknot configuration file")
-
             mod_logger.info(
                 "Created new cloudknot config file at {path:s}".format(path=config_file)
             )
-
     mod_logger.debug("Using cloudknot config file {path:s}".format(path=config_file))
-
     return config_file
 
 
