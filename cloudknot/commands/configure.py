@@ -1,9 +1,8 @@
 import docker
 import logging
 import os
-import subprocess
-from awscli.customizations.configure.configure import InteractivePrompter
-
+import base64
+import configparser
 from .base import Base
 from ..aws import (
     DockerRepo,
@@ -13,8 +12,11 @@ from ..aws import (
     set_profile,
     set_region,
     set_ecr_repo,
+    refresh_clients,
+    clients,
+    list_profiles,
 )
-from ..config import add_resource
+from ..config import add_resource, rlock
 
 module_logger = logging.getLogger(__name__)
 is_windows = os.name == "nt"
@@ -47,12 +49,18 @@ def pull_and_push_base_images(region, profile, ecr_repo):
         cmd = ["aws", "ecr", "get-login", "--no-include-email", "--region", region]
 
     # Refresh the aws ecr login credentials
-    login_cmd = subprocess.check_output(cmd, shell=is_windows)
+    refresh_clients()
+
+    response = clients["ecr"].get_authorization_token()
+    username, password = (
+        base64.b64decode(response["authorizationData"][0]["authorizationToken"])
+        .decode()
+        .split(":")
+    )
+    registry = response["authorizationData"][0]["proxyEndpoint"]
 
     # Login
-    login_cmd = login_cmd.decode("ASCII").rstrip("\n").split(" ")
-    fnull = open(os.devnull, "w")
-    subprocess.call(login_cmd, stdout=fnull, stderr=subprocess.STDOUT, shell=is_windows)
+    c.login(username, password, registry=registry)
 
     repo = DockerRepo(name=ecr_repo)
 
@@ -72,6 +80,23 @@ def pull_and_push_base_images(region, profile, ecr_repo):
         module_logger.debug(line)
 
 
+class InteractivePrompter(object):
+    @staticmethod
+    def mask_value(current_value):
+        return None if current_value is None else "*" * 16 + current_value[-4:]
+
+    def get_value(self, current_value, config_name, prompt_text=""):
+        if config_name in ("aws_access_key_id", "aws_secret_access_key"):
+            current_value = __class__.mask_value(current_value)
+        response = input("%s [%s]: " % (prompt_text, current_value))
+        if not response:
+            # If the user hits enter, we return a value of None
+            # instead of an empty string.  That way we can determine
+            # whether or not a value has changed.
+            response = None
+        return response
+
+
 class Configure(Base):
     """Run `aws configure` and set up cloudknot AWS ECR repository"""
 
@@ -82,14 +107,46 @@ class Configure(Base):
             "CLI just press <ENTER> at the prompts to accept the pre-"
             "existing values. If you have not yet configured AWS CLI, "
             "please follow the prompts to start using cloudknot.\n"
+            "\n`cloudknot configure` will try to set up credentials for AWS."
+            "If you have already configured credentials for AWS, just press"
+            "<ENTER> at the prompts to accept the pre-existing values.\n"
         )
-
-        subprocess.call("aws configure".split(" "), shell=is_windows)
 
         print(
-            "\n`aws configure` complete. Resuming configuration with "
+            "\nAWS credential configuration complete. Resuming configuration with "
             "`cloudknot configure`\n"
         )
+
+        with rlock:
+            profile = get_profile(fallback="default")
+            profiles = list_profiles()
+
+            credentials_config = configparser.ConfigParser()
+            if os.path.exists(profiles.credentials_file):
+                credentials_config.read(profiles.credentials_file)
+
+            updated_credentials = False
+            for config_name, prompt_text in (
+                ("aws_access_key_id", "AWS Access Key ID"),
+                ("aws_secret_access_key", "AWS Secret Access Key"),
+            ):
+                prompter = InteractivePrompter()
+                new_value = prompter.get_value(
+                    current_value=credentials_config.get(
+                        profile, config_name, fallback=None
+                    ),
+                    config_name=config_name,
+                    prompt_text=prompt_text,
+                )
+                if new_value is not None:
+                    if profile not in credentials_config:
+                        credentials_config.add_section(profile)
+                    credentials_config.set(profile, config_name, new_value)
+                    with open(profiles.credentials_file, "w") as f:
+                        credentials_config.write(f)
+                    updated_credentials = True
+        if updated_credentials:
+            refresh_clients()
 
         values_to_prompt = [
             # (config_name, prompt_text, getter, setter)
