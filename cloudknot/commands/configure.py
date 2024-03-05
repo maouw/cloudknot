@@ -1,10 +1,8 @@
 import docker
 import logging
 import os
-import subprocess
 import configparser
 import base64
-# from awscli.customizations.configure.configure import InteractivePrompter
 
 from .base import Base
 from ..aws import (
@@ -16,13 +14,14 @@ from ..aws import (
     set_region,
     set_ecr_repo,
     list_profiles,
-    clients
+    clients,
+    refresh_clients
 )
 from ..config import add_resource
 
 module_logger = logging.getLogger(__name__)
 is_windows = os.name == "nt"
-
+module_logger.setLevel(logging.DEBUG)
 
 class InteractivePrompter(object):
     @staticmethod
@@ -77,16 +76,20 @@ def pull_and_push_base_images(region, profile, ecr_repo):
     )
 
     registry = response["authorizationData"][0]["proxyEndpoint"]
+    
+    docker_client = docker.client.from_env()
+    docker_client.login(username, password, registry=registry)
+    
 
     cmd = f"docker login -u {username} -p {password} {registry}"
 
     # Refresh the aws ecr login credentials
-    login_cmd = subprocess.check_output(cmd, shell=is_windows)
+    # login_cmd = subprocess.check_output(cmd, shell=is_windows)
 
     # Login
-    login_cmd = login_cmd.decode("ASCII").rstrip("\n").split(" ")
-    fnull = open(os.devnull, "w")
-    subprocess.call(login_cmd, stdout=fnull, stderr=subprocess.STDOUT, shell=is_windows)
+    # login_cmd = login_cmd.decode("ASCII").rstrip("\n").split(" ")
+    # fnull = open(os.devnull, "w")
+    # subprocess.call(login_cmd, stdout=fnull, stderr=subprocess.STDOUT, shell=is_windows)
 
     repo = DockerRepo(name=ecr_repo)
 
@@ -111,11 +114,9 @@ class Configure(Base):
 
     def run(self):
         print(
-            "\n`cloudknot configure` is passing control over to "
-            "`aws configure`. If you have already configured AWS "
-            "CLI just press <ENTER> at the prompts to accept the pre-"
-            "existing values. If you have not yet configured AWS CLI, "
-            "please follow the prompts to start using cloudknot.\n"
+            "\n`cloudknot configure` will try to set up credentials for AWS."
+            "If you have already configured credentials for AWS, just press"
+            "<ENTER> at the prompts to accept the pre-existing values.\n"
         )
 
         # If you want to add new values to prompt, update this list here.
@@ -130,7 +131,7 @@ class Configure(Base):
             ("aws_access_key_id", "AWS Access Key ID"),
             ("aws_secret_access_key", "AWS Secret Access Key"),
         ]
-
+        updated_credentials = False
         for config_name, prompt_text in values_to_prompt:
             prompter = InteractivePrompter()
             new_value = prompter.get_value(
@@ -145,7 +146,9 @@ class Configure(Base):
                 credentials.set(profile, config_name, new_value)
                 with open(profiles.credentials_file, "w") as f:
                     credentials.write(f)
-
+                updated_credentials = True
+        if updated_credentials:
+            refresh_clients()
         config = configparser.ConfigParser()
         config.read(profiles.aws_config_file)
         if profile not in config:
@@ -175,6 +178,8 @@ class Configure(Base):
                     config.write(f)
 
         # subprocess.call("aws configure".split(" "), shell=is_windows)
+        profile = get_profile(fallback=os.environ.get("AWS_PROFILE", "default"))
+        profiles = list_profiles()
 
         print(
             "\naws configuration complete. Resuming configuration with "

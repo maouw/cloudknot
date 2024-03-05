@@ -58,7 +58,7 @@ def get_config_file():
     
     with rlock:
         # Create the directory if it doesn't exist:
-        os.path.makedirs(os.path.dirname(config_file), exist_ok=True)
+        os.makedirs(os.path.dirname(config_file), exist_ok=True)
         if not os.path.isfile(config_file):
             with open(config_file, "w") as f:
                 f.write("# cloudknot configuration file")
