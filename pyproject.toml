@@ -69,11 +69,50 @@ norecursedirs = "src/cloudknot/data"
 
 [tool.ruff]
 line-length = 88
+indent-width = 4
+target-version = "py310"
 extend-exclude = [".*", "*.egg-info", "build", "doc",  "examples", "cloudknot/data", "cloudknot/_version.py", "cloudknot/cli.py"]
 
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+#extend-ignore = ["W191", "E111", "E114", "E117", "D206", "D300", "Q000", "Q001", "Q002", "Q003", "COM812", "COM819", "ISC001", "ISC002"]
+
 [tool.ruff.lint]
-select = ["C", "D", "E", "F", "W", "B"]
-extend-ignore = ["E501", "N802", "N806", "E203"]
+select = [
+	"C90", # mccabe
+	"D", # pydocstyle
+	"E", # pycodestyle
+	"W", # pycodestyle
+	"F", # pyflakes
+	"B", # flake8-bugbear
+	"ISC", # flake8-implicit-str-concat
+	"YTT", # flake8-2020 for misuse of sys.version or sys.version_info
+	#"S", # flake8-bandit
+	"BLE", # flake8-blind-except
+	"A", # flake8-builtins
+	"C4", # flake8-comprehensions
+	"DTZ", # flake8-datetimez
+	"G", # flake8-logging-format
+	"PT", # flake8-pytest-style
+	"Q", # flake8-quotes
+	"RET", # flake8-return
+	"SIM", # flake8-simplify
+	"ARG", # flake8-unused-arguments
+	"PL", # pylint
+	"FLY002", # flynt: static-join-to-f-string
+#	"FURB", # refurb
+	"LOG", # flake8-logging
+	"RUF", # ruff-specific
+]
+extend-ignore = ["E501", "N802", "N806", "E203", "C408","PLE1205", "ISC001"]#, "W191", "E111", "E114", "E117", "D206", "D300", "Q000", "Q001", "Q002", "Q003", "COM812", "COM819", "ISC001"]#, "ISC002"]
+
 
 [tool.ruff.lint.extend-per-file-ignores]
 # Also ignore `E402` in all `__init__.py` files.
