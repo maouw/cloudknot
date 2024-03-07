@@ -1,14 +1,74 @@
+[project]
+name = "cloudknot"
+dynamic = ["version"]
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" }]
+maintainers = [
+	{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" }
+]
+description = "Cloudknot: a python library designed to run your existing python code on AWS Batch"
+readme = "README.md"
+classifiers = [
+	"Development Status :: 3 - Alpha",
+	"Environment :: Console",
+	"Intended Audience :: Science/Research",
+	"License :: OSI Approved :: MIT License",
+	"Operating System :: OS Independent",
+	"Programming Language :: Python",
+	"Topic :: Scientific/Engineering"
+]
+dependencies = [
+	"boto3>=1.34.55,<2",
+	"botocore>=1.34.55,<2",
+	"cloudpickle>=3.0.0,<4",
+	"docker>=7.0.0,<8",
+	"pipreqs>=0.5.0,<1",
+	"tenacity>=8.2.3,<9",
+]
+
+[project.urls]
+"Homepage" = "https://nrdg.github.io/cloudknot"
+"Source" = "https://github.com/nrdg/cloudknot"
+
+[project.optional-dependencies]
+dev = [
+	"black>=24.2.0,<25",
+	"coverage>=7.4,<8",
+	"flake8>=7.0.0,<8",
+	"numpydoc>=1.6.0,<2",
+	"moto[cloudformation]==4.1.5",
+	"pre-commit>=3.6.2,<4",
+	"pydocstyle>=6.3.0,<7",
+	"pytest-cov>=4.1.0,<5",
+	"pytest-xdist[psutil]==2.1.0",
+	"pytest>=8.0.0,<9",
+	"sphinx==5.0.0",
+]
+maint = ["rapidfuzz>=3.6.2,<4"]
+
+[project.scripts]
+cloudknot = "cloudknot.cli:main"
+
 [build-system]
-requires = ["setuptools>=42", "wheel", "setuptools_scm[toml]>=3.4"]
+requires = ["setuptools", "wheel", "setuptools_scm[toml]"]
 build-backend = "setuptools.build_meta"
 
-[tools.setuptools_scm]
+[tool.setuptools_scm]
+
+[tool.setuptools]
+package-data = { "cloudknot" = [
+	"data/*",
+	"data/*/*",
+	"data/*/*/*",
+	"data/*/*/*/*",
+	"templates/*"
+] }
 
 [tool.black]
 line-length = 88
 target-version = ['py310']
 exclude = '''
-
 (
   /(
       \.eggs         # exclude a few common directories in the
@@ -27,7 +87,17 @@ exclude = '''
     | build
     | dist
   )/
-  | _version.py
-  | cli.py
+  | foo.py           # also separately exclude a file named foo.py in
+                     # the root of the project
 )
 '''
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
+norecursedirs = "cloudknot/data"
+
+[tool.pydocstyle]
+convention = "numpy"
+match = "(?!_version).*\\.py"
+match-dir = "cloudknot"
+
