@@ -23,7 +23,7 @@ dependencies = [
 	"botocore>=1.34.55,<2",
 	"cloudpickle>=3.0.0,<4",
 	"docker>=7.0.0,<8",
-	"pipreqs>=0.5.0,<1",
+	"pipreqs==0.4.13",
 	"tenacity>=8.2.3,<9",
 ]
 
@@ -33,13 +33,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-	"black>=24.2.0,<25",
 	"coverage>=7.4,<8",
-	"flake8>=7.0.0,<8",
 	"numpydoc>=1.6.0,<2",
 	"moto[cloudformation]==4.1.5",
 	"pre-commit>=3.6.2,<4",
-	"pydocstyle>=6.3.0,<7",
+	"ruff>=0.3.1,<1",
 	"pytest-cov>=4.1.0,<5",
 	"pytest-xdist[psutil]==2.1.0",
 	"pytest>=8.0.0,<9",
@@ -65,39 +63,23 @@ package-data = { "cloudknot" = [
 	"templates/*"
 ] }
 
-[tool.black]
-line-length = 88
-target-version = ['py310']
-exclude = '''
-(
-  /(
-      \.eggs         # exclude a few common directories in the
-    | \.git          # root of the project
-    | \.github
-    | \.idea
-    | \.ipynb_checkpoints
-    | \.hg
-    | \.pytest_cache
-    | \.tox
-    | \.venv
-    | cloudknot/data
-    | cloudknot.egg-info
-    | examples
-    | doc
-    | build
-    | dist
-  )/
-  | foo.py           # also separately exclude a file named foo.py in
-                     # the root of the project
-)
-'''
-
 [tool.pytest.ini_options]
 addopts = "--doctest-modules"
-norecursedirs = "cloudknot/data"
+norecursedirs = "src/cloudknot/data"
 
-[tool.pydocstyle]
+[tool.ruff]
+line-length = 88
+extend-exclude = [".*", "*.egg-info", "build", "doc",  "examples", "cloudknot/data", "cloudknot/_version.py", "cloudknot/cli.py"]
+
+[tool.ruff.lint]
+select = ["C", "D", "E", "F", "W", "B"]
+extend-ignore = ["E501", "N802", "N806", "E203"]
+
+[tool.ruff.lint.extend-per-file-ignores]
+# Also ignore `E402` in all `__init__.py` files.
+"cloudknot/*/*" = ["D"]
+#"cloudknot"
+
+[tool.ruff.lint.pydocstyle]
 convention = "numpy"
-match = "(?!_version).*\\.py"
-match-dir = "cloudknot"
 
