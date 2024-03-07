@@ -1,28 +1,30 @@
-import docker
-import logging
-import os
 import base64
 import configparser
-from .base import Base
+import logging
+import os
+
+import docker
+
 from ..aws import (
     DockerRepo,
+    clients,
+    get_ecr_repo,
     get_profile,
     get_region,
-    get_ecr_repo,
+    list_profiles,
+    refresh_clients,
+    set_ecr_repo,
     set_profile,
     set_region,
-    set_ecr_repo,
-    refresh_clients,
-    clients,
-    list_profiles,
 )
 from ..config import add_resource, rlock
+from .base import Base
 
 module_logger = logging.getLogger(__name__)
 is_windows = os.name == "nt"
 
 
-def pull_and_push_base_images(region, profile, ecr_repo):
+def pull_and_push_base_images(region, profile, ecr_repo):  # noqa: ARG001 # FIXME: Parameters profile and region are not used -- remove?
     # Use docker low-level APIClient for tagging
     c = docker.from_env().api
     # And the image client for pulling and pushing
@@ -58,22 +60,25 @@ def pull_and_push_base_images(region, profile, ecr_repo):
 
     # Log push info
     module_logger.info(
-        "Pushing base image {name:s} to ecr repository {repo:s}"
-        "".format(name=py_base, repo=repo.repo_uri)
+        "Pushing base image {name:s} to ecr repository {repo:s}" "".format(
+            name=py_base, repo=repo.repo_uri
+        )
     )
 
     for line in cli.push(repository=repo.repo_uri, tag=ecr_tag, stream=True):
         module_logger.debug(line)
 
 
-class InteractivePrompter(object):
-    @staticmethod
-    def mask_value(current_value):
-        return None if current_value is None else "*" * 16 + current_value[-4:]
+class Configure(Base):
+    """Run `aws configure` and set up cloudknot AWS ECR repository"""
 
-    def get_value(self, current_value, config_name, prompt_text=""):
-        if config_name in ("aws_access_key_id", "aws_secret_access_key"):
-            current_value = __class__.mask_value(current_value)
+    @staticmethod
+    def interactive_prompt(current_value, config_name, prompt_text=""):
+        if (
+            config_name in q("aws_access_key_id", "aws_secret_access_key")
+            and current_value
+        ):
+            current_value = "*" * 16 + current_value[-4:]
         response = input("%s [%s]: " % (prompt_text, current_value))
         if not response:
             # If the user hits enter, we return a value of None
@@ -81,10 +86,6 @@ class InteractivePrompter(object):
             # whether or not a value has changed.
             response = None
         return response
-
-
-class Configure(Base):
-    """Run `aws configure` and set up cloudknot AWS ECR repository"""
 
     def run(self):
         print(
@@ -116,8 +117,7 @@ class Configure(Base):
                 ("aws_access_key_id", "AWS Access Key ID"),
                 ("aws_secret_access_key", "AWS Secret Access Key"),
             ):
-                prompter = InteractivePrompter()
-                new_value = prompter.get_value(
+                new_value = self.interactive_prompt(
                     current_value=credentials_config.get(
                         profile, config_name, fallback=None
                     ),
@@ -143,10 +143,9 @@ class Configure(Base):
 
         values = {}
         for config_name, prompt_text, getter, setter in values_to_prompt:
-            prompter = InteractivePrompter()
             default_value = getter()
 
-            new_value = prompter.get_value(
+            new_value = self.interactive_prompt(
                 current_value=default_value,
                 config_name=config_name,
                 prompt_text=prompt_text,

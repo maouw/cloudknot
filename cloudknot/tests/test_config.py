@@ -1,14 +1,22 @@
-import cloudknot as ck
 import configparser
 import filecmp
 import os
 import os.path as op
-import pytest
 import shutil
 import tempfile
 
-from moto import mock_batch, mock_cloudformation, mock_ec2, mock_ecr
-from moto import mock_ecs, mock_iam, mock_s3
+import pytest
+from moto import (
+    mock_batch,
+    mock_cloudformation,
+    mock_ec2,
+    mock_ecr,
+    mock_ecs,
+    mock_iam,
+    mock_s3,
+)
+
+import cloudknot as ck
 
 data_path = op.join(ck.__path__[0], "data")
 

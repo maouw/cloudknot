@@ -1,11 +1,20 @@
-import cloudknot as ck
 import configparser
 import os
 import os.path as op
-import pytest
 import uuid
-from moto import mock_batch, mock_cloudformation, mock_ec2, mock_ecr
-from moto import mock_ecs, mock_iam, mock_s3
+
+import pytest
+from moto import (
+    mock_batch,
+    mock_cloudformation,
+    mock_ec2,
+    mock_ecr,
+    mock_ecs,
+    mock_iam,
+    mock_s3,
+)
+
+import cloudknot as ck
 
 bucket_name = "ck-test-bucket-" + str(uuid.uuid4()).replace("-", "")[:6]
 
@@ -160,11 +169,13 @@ def unit_testing_func(name=None, no_capitalize=False):
     clouknot.DockerImage
     """
     import sys  # noqa: F401
+
     import boto3.ec2  # noqa: F401
 
     if name:
-        from docker import api  # noqa: F401
         from os.path import join  # noqa: F401
+
+        from docker import api  # noqa: F401
 
         if not no_capitalize:
             import pytest as pt  # noqa: F401
@@ -173,8 +184,8 @@ def unit_testing_func(name=None, no_capitalize=False):
 
         return "Hello {0}!".format(name)
 
-    from six import binary_type as bt  # noqa: F401
     from dask.base import curry as dbc  # noqa: F401
+    from six import binary_type as bt  # noqa: F401
 
     return "Hello world!"
 

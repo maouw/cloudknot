@@ -1,11 +1,10 @@
-import botocore
-import cloudknot.config
+"""Classes for creating and managing remote docker repositories."""
 import logging
+from collections import namedtuple
 
-try:
-    from collections.abc import namedtuple
-except ImportError:
-    from collections import namedtuple
+import botocore.exceptions
+
+import cloudknot.config
 
 from .base_classes import NamedObject, clients, get_ecr_repo, get_tags
 
@@ -19,9 +18,9 @@ def _get_repo_info_from_uri(repo_uri):
 
     _repo_uri = repo_uri.split(":")[0]
     # Filter by matching on repo_uri
-    matching_repo = [
+    matching_repo = next(
         repo for repo in repositories if repo["repositoryUri"] == _repo_uri
-    ][0]
+    )
 
     return {
         "registry_id": matching_repo["registryId"],
@@ -31,9 +30,7 @@ def _get_repo_info_from_uri(repo_uri):
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
 class DockerRepo(NamedObject):
-    """
-    Class for creating and managing remote docker repositories.
-    """
+    """Class for creating and managing remote docker repositories."""
 
     def __init__(self, name, aws_resource_tags=None):
         """Initialize a Docker repo object.
@@ -100,6 +97,8 @@ class DockerRepo(NamedObject):
         # so we predefine it here. Also, it should be predefined as a
         # string to pass parameter validation by boto.
         repo_arn = "test"
+        repo_created = False
+        repo_name = repo_registry_id = repo_uri = None
         try:
             # If repo exists, retrieve its info
             response = clients["ecr"].describe_repositories(repositoryNames=[self.name])
@@ -142,8 +141,9 @@ class DockerRepo(NamedObject):
             )
         else:
             mod_logger.info(
-                "Repository {name:s} already exists at "
-                "{uri:s}".format(name=self.name, uri=repo_uri)
+                "Repository {name:s} already exists at " "{uri:s}".format(
+                    name=self.name, uri=repo_uri
+                )
             )
 
         try:

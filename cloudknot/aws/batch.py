@@ -1,24 +1,23 @@
-import cloudknot.config
-import cloudpickle
-from datetime import datetime
+"""Classes and functions for AWS Batch jobs."""
 import logging
 import pickle
 import time
+from collections import namedtuple
+from collections.abc import Mapping
 
-try:
-    from collections.abc import namedtuple
-except ImportError:
-    from collections import namedtuple
+import cloudpickle
+
+import cloudknot.config
 
 from ..dockerimage import DEFAULT_PICKLE_PROTOCOL
 from .base_classes import (
-    NamedObject,
-    clients,
-    ResourceDoesNotExistException,
-    ResourceClobberedException,
     BatchJobFailedError,
     CKTimeoutError,
     CloudknotInputError,
+    NamedObject,
+    ResourceClobberedException,
+    ResourceDoesNotExistException,
+    clients,
     get_s3_params,
 )
 
@@ -97,8 +96,7 @@ def _exists_already(job_id):
             environment_variables=environment_variables,
             array_job=array_job,
         )
-    else:
-        return JobExists(exists=False)
+    return JobExists(exists=False)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -217,34 +215,23 @@ class BatchJob(NamedObject):
                 raise CloudknotInputError("job_queue must be a string.")
 
             self._job_queue_arn = job_queue
-
-            if not all(
-                [
-                    hasattr(job_definition, "name"),
-                    hasattr(job_definition, "arn"),
-                    hasattr(job_definition, "output_bucket"),
-                    hasattr(job_definition, "retries"),
-                ]
+            if missing_attributes := {"name", "arn", "output_bucket", "retries"} - set(
+                dir(job_definition)
             ):
                 raise CloudknotInputError(
-                    'job_definition must have attributes "name", "arn", '
-                    '"output_bucket", and "retries".'
+                    f"job_definition must have attributes {missing_attributes}"
                 )
-
             self._job_definition = job_definition
+            self._environment_variables = None
 
             if environment_variables:
-                if not all(isinstance(s, dict) for s in environment_variables):
+                if not all((isinstance(s, Mapping) for s in environment_variables)):
                     raise CloudknotInputError("env_vars must be a sequence of " "dicts")
-                if not all(
-                    set(d.keys()) == {"name", "value"} for d in environment_variables
-                ):
+                if not all("name" in d and "value" in d for d in environment_variables):
                     raise CloudknotInputError(
                         "each dict in env_vars must " 'have keys "name" and "value"'
                     )
                 self._environment_variables = environment_variables
-            else:
-                self._environment_variables = None
 
             self._input = input_
             self._array_job = array_job
@@ -358,8 +345,9 @@ class BatchJob(NamedObject):
         cloudknot.config.add_resource(self._section_name, job_id, self.name)
 
         mod_logger.info(
-            "Submitted batch job {name:s} with jobID "
-            "{job_id:s}".format(name=self.name, job_id=job_id)
+            "Submitted batch job {name:s} with jobID " "{job_id:s}".format(
+                name=self.name, job_id=job_id
+            )
         )
 
         return job_id
@@ -392,9 +380,7 @@ class BatchJob(NamedObject):
         if self.array_job:
             keys.append("arrayProperties")
 
-        status = {k: job.get(k) for k in keys}
-
-        return status
+        return {k: job.get(k) for k in keys}  # Return status
 
     @property
     def log_urls(self):
@@ -418,9 +404,7 @@ class BatchJob(NamedObject):
                 "stream={log_name:s}".format(region=self.region, log_name=log_name)
             )
 
-        log_urls = [log_name2url(log) for log in log_stream_names]
-
-        return log_urls
+        return [log_name2url(log) for log in log_stream_names]
 
     @property
     def done(self):
@@ -430,12 +414,10 @@ class BatchJob(NamedObject):
         FAILED and the job has exceeded the max number of retry attempts
         """
         stat = self.status
-        done = stat["status"] == "SUCCEEDED" or (
+        return stat["status"] == "SUCCEEDED" or (
             stat["status"] == "FAILED"
             and len(stat["attempts"]) >= self.job_definition.retries
         )
-
-        return done
 
     def _collect_array_job_result(self, idx=0):
         """Collect the array job results and return as a complete list.
@@ -457,6 +439,7 @@ class BatchJob(NamedObject):
         # number and retrieve the latest one.
         attempt = self.job_definition.retries
         result_retrieved = False
+        key = None
 
         while not result_retrieved and attempt >= 0:
             key = "/".join(
@@ -472,17 +455,15 @@ class BatchJob(NamedObject):
 
             try:
                 response = clients["s3"].get_object(Bucket=bucket, Key=key)
-                result_retrieved = True
+                return pickle.loads(response.get("Body").read())
             except clients["s3"].exceptions.NoSuchKey:
                 attempt -= 1
 
-        if not result_retrieved:
-            raise CKTimeoutError(
-                "Result not available in bucket {bucket:s} with key {key:s}"
-                "".format(bucket=bucket, key=key)
+        raise CKTimeoutError(
+            "Result not available in bucket {bucket:s} with key {key:s}" "".format(
+                bucket=bucket, key=key
             )
-
-        return pickle.loads(response.get("Body").read())
+        )
 
     def result(self, timeout=None):
         """
@@ -506,10 +487,10 @@ class BatchJob(NamedObject):
             The result of the AWS Batch job
         """
         # Set start time for timeout period
-        start_time = datetime.now()
+        start_time = time.time()
 
         def time_diff():
-            return (datetime.now() - start_time).seconds
+            return int(time.time() - start_time)
 
         while not self.done and (timeout is None or time_diff() < timeout):
             time.sleep(5)
@@ -520,14 +501,11 @@ class BatchJob(NamedObject):
         status = self.status
         if status["status"] == "FAILED":
             raise BatchJobFailedError(self.job_id)
-        else:
-            if self.array_job:
-                return [
-                    self._collect_array_job_result(idx)
-                    for idx in range(len(self.input))
-                ]
-            else:
-                return self._collect_array_job_result()
+        if self.array_job:
+            return [
+                self._collect_array_job_result(idx) for idx in range(len(self.input))
+            ]
+        return self._collect_array_job_result()
 
     def terminate(self, reason):
         """

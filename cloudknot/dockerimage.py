@@ -1,6 +1,6 @@
 """Create, build, push, and manage Docker images for use in Cloudknot."""
+
 import configparser
-import docker
 import inspect
 import json
 import logging
@@ -8,17 +8,19 @@ import os
 import re
 import subprocess
 import tempfile
-from pipreqs import pipreqs
 from string import Template
+
+import docker
+from pipreqs import pipreqs
 
 from . import aws
 from . import config as ckconfig
 from .aws.base_classes import (
-    get_region,
-    get_profile,
-    ResourceClobberedException,
-    CloudknotInputError,
     CloudknotConfigurationError,
+    CloudknotInputError,
+    ResourceClobberedException,
+    get_profile,
+    get_region,
 )
 from .config import get_config_file, rlock
 
@@ -270,7 +272,7 @@ class DockerImage(aws.NamedObject):
                         # Set flag to do all the setup stuff below, warn user
                         params_changed = True
                         mod_logger.warning(
-                            "Found {name:s} in your config file but the input parameters "
+                            "Found {name} in your config file but the input parameters "
                             "have changed. The updated parameters are {l}. Continuing "
                             "with the new input parameters and disregarding any old, "
                             "potentially conflicting ones.".format(
@@ -628,7 +630,7 @@ class DockerImage(aws.NamedObject):
             ]
 
         # If some imports were left out, store their names
-        pip_names = set([i["name"] for i in self.pip_imports])
+        pip_names = {i["name"] for i in self.pip_imports}
         self._missing_imports = list(set(import_names) - pip_names)
 
         if len(import_names) != (len(self.pip_imports) + len(self.github_installs)):
@@ -665,7 +667,7 @@ class DockerImage(aws.NamedObject):
         if isinstance(tags, str):
             tags = [tags]
         elif all(isinstance(x, str) for x in tags):
-            tags = [t for t in tags]
+            tags = list(tags)
         else:
             raise CloudknotInputError(
                 "tags must be a string or a sequence " "of strings."
@@ -839,7 +841,10 @@ class DockerImage(aws.NamedObject):
                 login_cmd.decode("ASCII").rstrip("\n").rstrip("\r").split(" ")
             )
             login_result = subprocess.run(
-                login_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                login_cmd_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
             )
 
             # If login failed, pass error to user

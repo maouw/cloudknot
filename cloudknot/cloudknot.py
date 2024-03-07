@@ -1,18 +1,17 @@
 """Create Pars and Knot classes which represent AWS Cloudformation stack."""
-import botocore
+
 import configparser
 import ipaddress
 import logging
 import os
-
-from collections.abc import Iterable
 from collections import namedtuple
-
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-from . import aws
-from .config import get_config_file, rlock, is_valid_stack
-from . import dockerimage
+import botocore.exceptions
+
+from . import aws, dockerimage
+from .config import get_config_file, is_valid_stack, rlock
 
 __all__ = ["Pars", "Knot"]
 
@@ -21,7 +20,7 @@ mod_logger = logging.getLogger(__name__)
 
 
 def _stack_out(key, outputs):
-    o = list(filter(lambda d: d["OutputKey"] == key, outputs))[0]
+    o = next(filter(lambda d: d["OutputKey"] == key, outputs))
     return o["OutputValue"]
 
 
@@ -46,6 +45,8 @@ class Pars(aws.NamedObject):
     batch jobs. This set consists of IAM roles, a VPC with subnets for each
     availability zone, and a security group.
     """
+
+    MAX_PAR_NAME_LENGTH = 45
 
     def __init__(
         self,
@@ -113,7 +114,7 @@ class Pars(aws.NamedObject):
         if name is None:
             name = aws.get_user() + "-default"
 
-        if len(name) > 45:
+        if len(name) > self.MAX_PAR_NAME_LENGTH:
             raise aws.CloudknotInputError("Pars name must be less than 46 characters.")
 
         super(Pars, self).__init__(name=name)
@@ -173,9 +174,7 @@ class Pars(aws.NamedObject):
             ecs_response = aws.clients["iam"].list_attached_role_policies(
                 RoleName=self._ecs_instance_role.split("/")[-1]
             )
-            stack_policies = set(
-                [d["PolicyName"] for d in ecs_response["AttachedPolicies"]]
-            )
+            stack_policies = {d["PolicyName"] for d in ecs_response["AttachedPolicies"]}
 
             # Pars exists, check that user did not provide any conflicting
             # resource names. This dict has values that are tuples, the first
@@ -267,15 +266,15 @@ class Pars(aws.NamedObject):
             else:
                 try:
                     if all(isinstance(x, str) for x in policies):
-                        input_policies = set(list(policies))
+                        input_policies = set(policies)
                     else:
                         raise aws.CloudknotInputError(
                             "policies must be a string or a " "sequence of strings."
                         )
-                except TypeError:
+                except TypeError as exc:
                     raise aws.CloudknotInputError(
                         "policies must be a string " "or a sequence of strings"
-                    )
+                    ) from exc
 
             # Validate policies against the available policies
             policy_arns = []
@@ -318,7 +317,7 @@ class Pars(aws.NamedObject):
                 policy_arns += [aws_policies[policy] for policy in policy_names]
 
             s3_params = aws.get_s3_params()
-            policy_list = [s3_params.policy_arn] + [policy for policy in policy_arns]
+            policy_list = [s3_params.policy_arn] + list(policy_arns)
             policies = ",".join(policy_list)
 
             if use_default_vpc:
@@ -334,41 +333,43 @@ class Pars(aws.NamedObject):
                     vpc_id = response.get("Vpc").get("VpcId")
                 except aws.clients["ec2"].exceptions.ClientError as e:
                     error_code = e.response.get("Error").get("Code")
-                    if error_code == "DefaultVpcAlreadyExists":
-                        # Then use first default VPC
-                        response = aws.clients["ec2"].describe_vpcs(
-                            Filters=[{"Name": "isDefault", "Values": ["true"]}]
-                        )
-                        vpc_id = response.get("Vpcs")[0].get("VpcId")
-                    elif error_code == "UnauthorizedOperation":
-                        raise aws.CannotCreateResourceException(
-                            "Cannot create a default VPC because this is an "
-                            "unauthorized operation. You may not have the "
-                            "proper permissions to create a default VPC."
-                        )
-                    elif error_code == "OperationNotPermitted":
-                        raise aws.CannotCreateResourceException(
-                            "Cannot create a default VPC because this is an "
-                            "unauthorized operation. You might have resources "
-                            "in EC2-Classic in the current region."
-                        )
-                    else:  # pragma: nocover
-                        raise e
+                    match error_code:
+                        case "DefaultVpcAlreadyExists":
+                            # Then use first default VPC
+                            response = aws.clients["ec2"].describe_vpcs(
+                                Filters=[{"Name": "isDefault", "Values": ["true"]}]
+                            )
+                            vpc_id = response.get("Vpcs")[0].get("VpcId")
+
+                        case "UnauthorizedOperation":
+                            raise aws.CannotCreateResourceException(
+                                "Cannot create a default VPC because this is an "
+                                "unauthorized operation. You may not have the "
+                                "proper permissions to create a default VPC."
+                            ) from e
+                        case "OperationNotPermitted":
+                            raise aws.CannotCreateResourceException(
+                                "Cannot create a default VPC because this is an "
+                                "unauthorized operation. You might have resources "
+                                "in EC2-Classic in the current region."
+                            ) from e
+                        case _:
+                            raise e
+
                 except NotImplementedError as e:
                     moto_msg = (
                         "The create_default_vpc action has not " "been implemented"
                     )
-                    if moto_msg in e.args:
-                        # This exception is here for compatibility with
-                        # moto testing since the create_default_vpc
-                        # action has not been implemented in moto.
-                        # Pretend that the default vpc already exists
-                        response = aws.clients["ec2"].describe_vpcs(
-                            Filters=[{"Name": "isDefault", "Values": ["true"]}]
-                        )
-                        vpc_id = response.get("Vpcs")[0].get("VpcId")
-                    else:
+                    if moto_msg not in e.args:
                         raise e
+                    # This exception is here for compatibility with
+                    # moto testing since the create_default_vpc
+                    # action has not been implemented in moto.
+                    # Pretend that the default vpc already exists
+                    response = aws.clients["ec2"].describe_vpcs(
+                        Filters=[{"Name": "isDefault", "Values": ["true"]}]
+                    )
+                    vpc_id = response.get("Vpcs")[0].get("VpcId")
 
                 # Retrieve the subnets for the default VPC
                 paginator = aws.clients["ec2"].get_paginator("describe_subnets")
@@ -480,21 +481,17 @@ class Pars(aws.NamedObject):
                         raise aws.CloudknotInputError(
                             "If provided, ipv4_cidr must be a valid IPv4 "
                             "network range."
-                        )
+                        ) from None
                 else:
                     ipv4_cidr = str(ipaddress.IPv4Network("172.31.0.0/16"))
 
                 # Validate instance_tenancy input
-                if instance_tenancy:
-                    if instance_tenancy in ("default", "dedicated"):
-                        instance_tenancy = instance_tenancy
-                    else:
-                        raise aws.CloudknotInputError(
-                            "If provided, instance tenancy must be "
-                            'one of ("default", "dedicated").'
-                        )
-                else:
-                    instance_tenancy = "default"
+                instance_tenancy = instance_tenancy or "default"
+                if instance_tenancy not in {"default", "dedicated"}:
+                    raise aws.CloudknotInputError(
+                        "If provided, instance tenancy must be "
+                        'one of ("default", "dedicated").'
+                    )
 
                 # Get subnet CIDR blocks
                 # Get an IPv4Network instance representing the VPC CIDR block
@@ -693,6 +690,11 @@ class Knot(aws.NamedObject):
     and job queue. It also contains methods to submit batch jobs for a range
     of arguments.
     """
+
+    MAX_RETRIES = 10
+    VCPU
+    MAX_VCPUS = 8
+
 
     def __init__(
         self,
@@ -953,36 +955,41 @@ class Knot(aws.NamedObject):
             pars_name = config.get(self._knot_name, "pars")
             self._pars = Pars(name=pars_name)
             mod_logger.info(
-                "Knot {name:s} adopted PARS "
-                "{p:s}".format(name=self.name, p=self.pars.name)
+                "Knot {name:s} adopted PARS " "{p:s}".format(
+                    name=self.name, p=self.pars.name
+                )
             )
 
             image_name = config.get(self._knot_name, "docker-image")
             self._docker_image = dockerimage.DockerImage(name=image_name)
             mod_logger.info(
-                "Knot {name:s} adopted docker image {dr:s}"
-                "".format(name=self.name, dr=image_name)
+                "Knot {name:s} adopted docker image {dr:s}" "".format(
+                    name=self.name, dr=image_name
+                )
             )
 
             if not self.docker_image.images:
                 self.docker_image.build(tags=image_tags, nocache=no_image_cache)
                 mod_logger.info(
-                    "knot {name:s} built docker image {i!s}"
-                    "".format(name=self.name, i=self.docker_image.images)
+                    "knot {name:s} built docker image {i!s}" "".format(
+                        name=self.name, i=self.docker_image.images
+                    )
                 )
 
             if self.docker_image.repo_uri is None:
                 repo_name = config.get(self._knot_name, "docker-repo")
                 self._docker_repo = aws.DockerRepo(name=repo_name)
                 mod_logger.info(
-                    "Knot {name:s} adopted docker repository "
-                    "{dr:s}".format(name=self.name, dr=repo_name)
+                    "Knot {name:s} adopted docker repository " "{dr:s}".format(
+                        name=self.name, dr=repo_name
+                    )
                 )
 
                 self.docker_image.push(repo=self.docker_repo)
                 mod_logger.info(
-                    "Knot {name:s} pushed docker image {dr:s}"
-                    "".format(name=self.name, dr=self.docker_image.name)
+                    "Knot {name:s} pushed docker image {dr:s}" "".format(
+                        name=self.name, dr=self.docker_image.name
+                    )
                 )
             else:
                 self._docker_repo = None
@@ -1091,61 +1098,46 @@ class Knot(aws.NamedObject):
             job_queue_name = job_queue_name if job_queue_name else name + "-ck-jq"
 
             # Validate job_def_vcpus input
-            if job_def_vcpus:
-                cpus = int(job_def_vcpus)
-                if cpus < 1:
-                    raise aws.CloudknotInputError("vcpus must be positive")
-                else:
-                    job_def_vcpus = cpus
-            else:
-                job_def_vcpus = 1
+            if job_def_vcpus := int(job_def_vcpus or 1) < 1:
+                raise aws.CloudknotInputError("vcpus must be positive")
 
             # Set default memory
             try:
-                memory = int(memory) if memory is not None else 8000
-                if memory < 1:
+                if memory := int(memory or 8000) < 1:
                     raise aws.CloudknotInputError("memory must be positive")
             except ValueError:
-                raise aws.CloudknotInputError("memory must be an integer")
+                raise aws.CloudknotInputError("memory must be an integer") from None
 
             # Set default n_gpus
             try:
-                n_gpus = int(n_gpus) if n_gpus is not None else 0
-                if n_gpus < 0:
+                if n_gpus := int(n_gpus or 0):
                     raise aws.CloudknotInputError("n_gpus must non-negative")
             except ValueError:
-                raise aws.CloudknotInputError("n_gpus must be an integer")
+                raise aws.CloudknotInputError("n_gpus must be an integer") from None
 
             # Validate retries input
             try:
-                retries = int(retries) if retries is not None else 1
-                if retries < 1:
+                if retries := int(retries if retries is not None else 1) < 1:
                     raise aws.CloudknotInputError("retries must be > 0")
-                elif retries > 10:
-                    raise aws.CloudknotInputError("retries must be < 10")
+                elif retries > self.MAX_RETRIES:
+                    raise aws.CloudknotInputError(f"retries must be <= {self.MAX_RETRIES}")
             except ValueError:
-                raise aws.CloudknotInputError("retries must be an integer")
+                raise aws.CloudknotInputError("retries must be an integer") from None
 
             # Validate priority
             try:
-                priority = int(priority) if priority is not None else 1
-                if priority < 1:
+                if priority := int(priority if priority is not None else 1) < 1:
                     raise aws.CloudknotInputError("priority must be positive")
             except ValueError:
-                raise aws.CloudknotInputError("priority must be an integer")
+                raise aws.CloudknotInputError("priority must be an integer") from None
 
             # Set resource type, default to 'EC2' unless bid_percentage
             # is provided
-            if bid_percentage is not None:
-                resource_type = "SPOT"
-            else:
-                resource_type = "EC2"
+            resource_type = "SPOT" if bid_percentage is not None else "EC2"
 
-            min_vcpus = int(min_vcpus) if min_vcpus else 0
-            if min_vcpus < 0:
+            if min_vcpus := int(min_vcpus if min_vcpus is not None else 0) < 0:
                 raise aws.CloudknotInputError("min_vcpus must be non-negative")
-
-            if min_vcpus > 0:
+            elif min_vcpus > 0:
                 mod_logger.warning(
                     "min_vcpus is greater than zero. This means that your "
                     "compute environment will maintain some EC2 vCPUs, "
@@ -1155,8 +1147,7 @@ class Knot(aws.NamedObject):
                 )
 
             # Validate desired_vcpus input, default to 8
-            desired_vcpus = int(desired_vcpus) if desired_vcpus is not None else 8
-            if desired_vcpus < 0:
+            if desired_vcpus := int(desired_vcpus if desired_vcpus is not None else 8) < 0:
                 raise aws.CloudknotInputError("desired_vcpus must be " "non-negative")
 
             # Validate max_vcpus, default to 256
@@ -1189,7 +1180,7 @@ class Knot(aws.NamedObject):
                 )
 
             # Validate instance types
-            valid_instance_types = set(["optimal"]).union(_ec2_instance_types())
+            valid_instance_types = {"optimal"}.union(_ec2_instance_types())
 
             if not set(instance_types) < valid_instance_types:
                 raise aws.CloudknotInputError(
@@ -1206,11 +1197,10 @@ class Knot(aws.NamedObject):
                     bid_percentage = 100
 
             # Validate image_id input
-            if image_id is not None:
-                if not isinstance(image_id, str):
-                    raise aws.CloudknotInputError(
-                        "if provided, image_id must " "be a string"
-                    )
+            if image_id is not None and not isinstance(image_id, str):
+                raise aws.CloudknotInputError(
+                    "if provided, image_id must " "be a string"
+                )
 
             # Validate ec2_key_pair input
             if ec2_key_pair is not None:
@@ -1259,15 +1249,16 @@ class Knot(aws.NamedObject):
                 github_installs,
                 username_,
                 tags,
-                no_image_cache_,
+                no_image_cache_, # noqa ARG001 # FIXME: Remove this unused argument?
                 repo_name_,
             ):
                 if input_docker_image:
                     di = input_docker_image
 
                     mod_logger.info(
-                        "Knot {name:s} adopted docker image {i:s}"
-                        "".format(name=knot_name, i=docker_image.name)
+                        "Knot {name:s} adopted docker image {i:s}" "".format(
+                            name=knot_name, i=docker_image.name
+                        )
                     )
                 else:
                     # Create and build the docker image
@@ -1283,8 +1274,9 @@ class Knot(aws.NamedObject):
                 if not di.images:
                     di.build(tags=tags, nocache=no_image_cache)
                     mod_logger.info(
-                        "knot {name:s} built docker image {i!s}"
-                        "".format(name=knot_name, i=di.images)
+                        "knot {name:s} built docker image {i!s}" "".format(
+                            name=knot_name, i=di.images
+                        )
                     )
 
                 if di.repo_uri is None:
@@ -1308,8 +1300,9 @@ class Knot(aws.NamedObject):
                     dr = aws.DockerRepo(name=repo_name_)
 
                     mod_logger.info(
-                        "knot {name:s} created/adopted docker repo "
-                        "{r:s}".format(name=knot_name, r=dr.name)
+                        "knot {name:s} created/adopted docker repo " "{r:s}".format(
+                            name=knot_name, r=dr.name
+                        )
                     )
 
                     # Push to remote repo
@@ -1505,10 +1498,7 @@ class Knot(aws.NamedObject):
             bucket_env = [
                 e for e in job_def_env if e["name"] == "CLOUDKNOT_JOBS_S3_BUCKET"
             ]
-            if bucket_env:
-                job_def_output_bucket = bucket_env[0]["value"]
-            else:
-                job_def_output_bucket = None
+            job_def_output_bucket = bucket_env[0]["value"] if bucket_env else None
             job_def_retries = job_def["retryStrategy"]["attempts"]
 
             if not all(
@@ -1674,10 +1664,7 @@ class Knot(aws.NamedObject):
             If `job_type` is 'independent', list of futures for each job
         """
         if job_type is None:
-            if len(iterdata) == 1:
-                job_type = "independent"
-            else:
-                job_type = "array"
+            job_type = "independent" if len(iterdata) == 1 else "array"
 
         if job_type not in ["array", "independent"]:
             raise ValueError("`job_type` must be 'array' or 'independent'.")

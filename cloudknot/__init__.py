@@ -1,37 +1,44 @@
 """Cloudknot is a python library to run your existing code on AWS Batch."""
 
+import inspect
 import logging
 import os
-import subprocess
 import shutil
-import inspect
+import subprocess
 import typing
 
-from . import aws  # noqa
-from . import config  # noqa
-from .aws.base_classes import get_profile, set_profile, list_profiles  # noqa
-from .aws.base_classes import get_region, set_region  # noqa
-from .aws.base_classes import get_ecr_repo, set_ecr_repo  # noqa
-from .aws.base_classes import get_s3_params, set_s3_params  # noqa
-from .aws.base_classes import refresh_clients  # noqa
-from .cloudknot import *  # noqa
-from .dockerimage import *  # noqa
-from ._version import version as __version__  # noqa
+from . import (
+    aws,  # noqa
+    config,  # noqa
+)
+from ._version import version as __version__  # noqa: F401
+from .aws.base_classes import (  # noqa: F401  # noqa: F401  # noqa: F401  # noqa: F401
+    get_ecr_repo,
+    get_profile,
+    get_region,
+    get_s3_params,
+    list_profiles,
+    refresh_clients,
+    set_ecr_repo,
+    set_profile,
+    set_region,
+    set_s3_params,
+)
+from .cloudknot import *  # noqa: F403
+from .dockerimage import *  # noqa: F403
 
 if shutil.which("docker") is None:
     raise FileNotFoundError(
-        "Could not find the 'docker' executable in your PATH. To install Docker, consult https://docs.docker.com/engine/installation"
+        "Could not find the 'docker' executable in your PATH."
+        "To install Docker, consult https://docs.docker.com/engine/installation"
     )
 
 try:
     subprocess.check_call(
-        ["docker", "--version"],
-        shell=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
+        ["docker", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
     )
-except subprocess.CalledProcessError as e:
-    raise RuntimeError("Could not run 'docker --version'. Is Docker running?") from e
+except subprocess.CalledProcessError as err:
+    raise RuntimeError("Could not run 'docker --version'. Is Docker running?") from err
 
 
 class StrFmtStyleLoggerAdapter(logging.LoggerAdapter):

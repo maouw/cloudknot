@@ -1,14 +1,23 @@
-import cloudknot as ck
 import configparser
-import docker
 import filecmp
 import os
 import os.path as op
-import pytest
 import tempfile
 import uuid
-from moto import mock_batch, mock_cloudformation, mock_ec2, mock_ecr
-from moto import mock_ecs, mock_iam, mock_s3
+
+import docker
+import pytest
+from moto import (
+    mock_batch,
+    mock_cloudformation,
+    mock_ec2,
+    mock_ecr,
+    mock_ecs,
+    mock_iam,
+    mock_s3,
+)
+
+import cloudknot as ck
 
 bucket_name = "ck-test-bucket-" + str(uuid.uuid4()).replace("-", "")[:6]
 
@@ -169,11 +178,13 @@ def unit_testing_func(name=None, no_capitalize=False):
     clouknot.DockerImage
     """
     import sys  # noqa: F401
+
     import boto3.ec2  # noqa: F401
 
     if name:
-        from docker import api  # noqa: F401
         from os.path import join  # noqa: F401
+
+        from docker import api  # noqa: F401
 
         if not no_capitalize:
             import pytest as pt  # noqa: F401
@@ -182,8 +193,8 @@ def unit_testing_func(name=None, no_capitalize=False):
 
         return "Hello {0}!".format(name)
 
-    from six import binary_type as bt  # noqa: F401
     from dask.base import curry as dbc  # noqa: F401
+    from six import binary_type as bt  # noqa: F401
 
     return "Hello world!"
 
@@ -483,7 +494,7 @@ def test_DockerImage(cleanup_repos):
         tags = ["testing", ["testing1", "testing2"]]
         image_names = [None, "testing_image"]
 
-        for idx, (tag, n) in enumerate(zip(tags, image_names)):
+        for idx, (tag, n) in enumerate(zip(tags, image_names, strict=True)):
             di.build(tags=tag, image_name=n)
 
             n = n if n else "cloudknot/" + di.name

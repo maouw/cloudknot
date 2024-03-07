@@ -1,5 +1,4 @@
-import boto3
-import botocore
+"""Base classes and functions for AWS resources"""
 import configparser
 import json
 import logging
@@ -7,10 +6,16 @@ import os
 import re
 import uuid
 
+import boto3
+import botocore.config
+import botocore.exceptions
+
 try:
     from collections.abc import namedtuple
 except ImportError:
     from collections import namedtuple
+
+import contextlib
 
 from ..config import get_config_file, rlock
 
@@ -43,13 +48,16 @@ __all__ = [
 ]
 mod_logger = logging.getLogger(__name__)
 
+client_names = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
+
 
 def get_tags(name, additional_tags=None):
+    """Get a list of tags for an AWS resource"""
     tag_list = []
     if additional_tags is not None:
         if isinstance(additional_tags, list):
             if not all(
-                [set(item.keys()) == set(["Key", "Value"]) for item in additional_tags]
+                set(item.keys()) == {"Key", "Value"} for item in additional_tags
             ):
                 raise ValueError(
                     "If additional_tags is a list, it must be a list of "
@@ -58,7 +66,7 @@ def get_tags(name, additional_tags=None):
                 )
             tag_list += additional_tags
         elif isinstance(additional_tags, dict):
-            if "Key" in additional_tags.keys() or "Value" in additional_tags.keys():
+            if "Key" in additional_tags or "Value" in additional_tags:
                 raise ValueError(
                     "If additional_tags is a dict, it cannot contain keys named 'Key' or "
                     "'Value'. It looks like you are trying to pass in tags of the form "
@@ -302,7 +310,7 @@ def set_s3_params(bucket, policy=None, sse=None):
     config = configparser.ConfigParser()
 
     def test_bucket_put_get(bucket_, sse_):
-        key = "cloudnot-test-permissions-key"
+        key = "cloudnot-test-permissions-key"  # FIXME: Typo in word 'cloudnot'
         try:
             if sse_:
                 clients["s3"].put_object(
@@ -312,17 +320,15 @@ def set_s3_params(bucket, policy=None, sse=None):
                 clients["s3"].put_object(Bucket=bucket_, Body=b"test", Key=key)
 
             clients["s3"].get_object(Bucket=bucket_, Key=key)
-        except clients["s3"].exceptions.ClientError:
+        except clients["s3"].exceptions.ClientError as err:
             raise CloudknotInputError(
                 "The requested bucket name already "
                 "exists and you do not have permission "
                 "to put or get objects in it."
-            )
+            ) from err
 
-        try:
+        with contextlib.suppress(Exception):
             clients["s3"].delete_object(Bucket=bucket_, Key=key)
-        except Exception:
-            pass
 
     with rlock:
         config.read(config_file)
@@ -417,7 +423,7 @@ def bucket_policy_document(bucket):
         A dictionary containing the AWS policy document
     """
     # Add policy statements to access to cloudknot S3 bucket
-    s3_policy_doc = {
+    return {
         "Version": "2012-10-17",
         "Statement": [
             {
@@ -432,8 +438,6 @@ def bucket_policy_document(bucket):
             },
         ],
     }
-
-    return s3_policy_doc
 
 
 def update_s3_policy(policy, bucket):
@@ -517,40 +521,40 @@ def get_region():
 
         if config.has_section("aws") and config.has_option("aws", "region"):
             return config.get("aws", "region")
-        else:
-            # Set `region`, the fallback region in case the cloudknot
-            # config file has no region set
-            try:
-                # Get the region from an environment variable
-                region = os.environ["AWS_DEFAULT_REGION"]
-            except KeyError:
-                # Get the default region from the AWS config file
-                home = os.path.expanduser("~")
-                aws_config_file = os.path.join(home, ".aws", "config")
 
-                fallback_region = "us-east-1"
-                if os.path.isfile(aws_config_file):
-                    aws_config = configparser.ConfigParser()
-                    aws_config.read(aws_config_file)
-                    try:
-                        region = aws_config.get(
-                            "default", "region", fallback=fallback_region
-                        )
-                    except TypeError:  # pragma: nocover
-                        # python 2.7 compatibility
-                        region = aws_config.get("default", "region")
-                        region = region if region else fallback_region
-                else:
-                    region = fallback_region
+        # Set `region`, the fallback region in case the cloudknot
+        # config file has no region set
 
-            if not config.has_section("aws"):
-                config.add_section("aws")
+        try:
+            # Get the region from an environment variable
+            region = os.environ["AWS_DEFAULT_REGION"]
+        except KeyError:
+            # Get the default region from the AWS config file
+            aws_config_file = os.path.join("~", ".aws", "config")
 
-            config.set("aws", "region", region)
-            with open(config_file, "w") as f:
-                config.write(f)
+            fallback_region = "us-east-1"
+            if os.path.isfile(aws_config_file):
+                aws_config = configparser.ConfigParser()
+                aws_config.read(aws_config_file)
+                try:
+                    region = aws_config.get(
+                        "default", "region", fallback=fallback_region
+                    )
+                except TypeError:  # pragma: nocover
+                    # python 2.7 compatibility
+                    region = aws_config.get("default", "region")
+                    region = region if region else fallback_region
+            else:
+                region = fallback_region
 
-            return region
+        if not config.has_section("aws"):
+            config.add_section("aws")
+
+        config.set("aws", "region", region)
+        with open(config_file, "w") as f:
+            config.write(f)
+
+        return region
 
 
 def set_region(region="us-east-1"):
@@ -593,17 +597,8 @@ def set_region(region="us-east-1"):
         session = boto3.Session(
             profile_name=profile_name if profile_name != "from-env" else None
         )
-        clients["batch"] = session.client(
-            "batch", region_name=region, config=boto_config
-        )
-        clients["cloudformation"] = session.client(
-            "cloudformation", region_name=region, config=boto_config
-        )
-        clients["ecr"] = session.client("ecr", region_name=region, config=boto_config)
-        clients["ecs"] = session.client("ecs", region_name=region, config=boto_config)
-        clients["ec2"] = session.client("ec2", region_name=region, config=boto_config)
-        clients["iam"] = session.client("iam", region_name=region, config=boto_config)
-        clients["s3"] = session.client("s3", region_name=region, config=boto_config)
+        for k in client_names:
+            clients[k] = session.client(k, region_name=region, config=boto_config)
 
     mod_logger.debug("Set region to {region:s}".format(region=region))
 
@@ -666,12 +661,9 @@ def list_profiles():
 
 
 def get_user():
+    """Get the current AWS username"""
     user_info = clients["iam"].get_user().get("User")
-    username = user_info.get("UserName")
-    if username is None:
-        username = user_info.get("Arn").split(":")[-1]
-
-    return username
+    return user_info.get("UserName", user_info.get("Arn").split(":")[-1])
 
 
 def get_profile(fallback="from-env"):
@@ -684,8 +676,8 @@ def get_profile(fallback="from-env"):
 
     Parameters
     ----------
-    fallback :
-        The fallback value if get_profile cannot find an AWS profile.
+    fallback : string (optional)
+        The fallback value if get_profile() cannot find an AWS profile.
         Default: 'from-env'
 
     Returns
@@ -702,25 +694,25 @@ def get_profile(fallback="from-env"):
 
         if config.has_section("aws") and config.has_option("aws", "profile"):
             return config.get("aws", "profile")
-        else:
-            # Set profile from environment variable
-            try:
-                profile = os.environ["AWS_PROFILE"]
-            except KeyError:
-                if "default" in list_profiles().profile_names:
-                    # Set profile in cloudknot config to 'default'
-                    profile = "default"
-                else:
-                    return fallback
 
-            if not config.has_section("aws"):
-                config.add_section("aws")
+        # Set profile from environment variable
+        try:
+            profile = os.environ["AWS_PROFILE"]
+        except KeyError:
+            if "default" in list_profiles().profile_names:
+                # Set profile in cloudknot config to 'default'
+                profile = "default"
+            else:
+                return fallback
 
-            config.set("aws", "profile", profile)
-            with open(config_file, "w") as f:
-                config.write(f)
+        if not config.has_section("aws"):
+            config.add_section("aws")
 
-            return profile
+        config.set("aws", "profile", profile)
+        with open(config_file, "w") as f:
+            config.write(f)
+
+        return profile
 
 
 def set_profile(profile_name):
@@ -765,55 +757,12 @@ def set_profile(profile_name):
         session = boto3.Session(
             profile_name=profile_name if profile_name != "from-env" else None
         )
-        clients["batch"] = session.client(
-            "batch", region_name=get_region(), config=boto_config
-        )
-        clients["cloudformation"] = session.client(
-            "cloudformation", region_name=get_region(), config=boto_config
-        )
-        clients["ecr"] = session.client(
-            "ecr", region_name=get_region(), config=boto_config
-        )
-        clients["ecs"] = session.client(
-            "ecs", region_name=get_region(), config=boto_config
-        )
-        clients["ec2"] = session.client(
-            "ec2", region_name=get_region(), config=boto_config
-        )
-        clients["iam"] = session.client(
-            "iam", region_name=get_region(), config=boto_config
-        )
-        clients["s3"] = session.client(
-            "s3", region_name=get_region(), config=boto_config
-        )
+        for k in client_names:
+            clients[k] = session.client(k, region_name=get_region(), config=boto_config)
 
     mod_logger.debug("Set profile to {profile:s}".format(profile=profile_name))
 
 
-#: module-level dictionary of boto3 clients for IAM, EC2, Batch, ECR, ECS, S3.
-clients = {
-    "batch": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "batch", region_name=get_region()
-    ),
-    "cloudformation": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "cloudformation", region_name=get_region()
-    ),
-    "ecr": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "ecr", region_name=get_region()
-    ),
-    "ecs": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "ecs", region_name=get_region()
-    ),
-    "ec2": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "ec2", region_name=get_region()
-    ),
-    "iam": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "iam", region_name=get_region()
-    ),
-    "s3": boto3.Session(profile_name=get_profile(fallback=None)).client(
-        "s3", region_name=get_region()
-    ),
-}
 """module-level dictionary of boto3 clients.
 
 Storing the boto3 clients in a module-level dictionary allows us to change
@@ -823,6 +772,12 @@ Advanced users: if you want to use cloudknot and boto3 at the same time,
 you should use these clients to ensure that you have the right profile
 and region.
 """
+clients = {
+    k: boto3.Session(profile_name=get_profile(fallback=None)).client(
+        k, region_name=get_region()
+    )
+    for k in client_names
+}
 
 
 def refresh_clients(max_pool=10):
@@ -830,17 +785,8 @@ def refresh_clients(max_pool=10):
     with rlock:
         config = botocore.config.Config(max_pool_connections=max_pool)
         session = boto3.Session(profile_name=get_profile(fallback=None))
-        clients["iam"] = session.client("iam", region_name=get_region(), config=config)
-        clients["ec2"] = session.client("ec2", region_name=get_region(), config=config)
-        clients["batch"] = session.client(
-            "batch", region_name=get_region(), config=config
-        )
-        clients["ecr"] = session.client("ecr", region_name=get_region(), config=config)
-        clients["ecs"] = session.client("ecs", region_name=get_region(), config=config)
-        clients["s3"] = session.client("s3", region_name=get_region(), config=config)
-        clients["cloudformation"] = session.client(
-            "cloudformation", region_name=get_region(), config=config
-        )
+        for k in client_names:
+            clients[k] = session.client(k, region_name=get_region(), config=config)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -1112,7 +1058,7 @@ class NamedObject(object):
 
         Append profile and region to the resource type name
         """
-        return " ".join([resource_type, self.profile, self.region])
+        return f"{resource_type} {self.profile} {self.region}"
 
     def check_profile(self):
         """Check for profile exception"""

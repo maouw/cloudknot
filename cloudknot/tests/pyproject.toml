@@ -1,0 +1,4 @@
+[tool.ruff]
+# Extend the `pyproject.toml` file in the parent directory.
+extend = "../pyproject.toml"
+lint.select = ["E", "W", "F", "B", "A", "Q", "I"]

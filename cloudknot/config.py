@@ -9,13 +9,16 @@ Ideally, the cloudknot user should never have to use these functions to
 interact with the cloudknot config file. Each cloudknot object maintains
 references to its state in the config file.
 """
-import botocore
+
 import configparser
-import docker
+import contextlib
 import errno
 import logging
 import os
 from threading import RLock
+
+import botocore
+import docker
 
 from . import aws
 
@@ -124,10 +127,8 @@ def remove_resource(section, option):
 
     with rlock:
         config.read(config_file)
-        try:
+        with contextlib.suppress(configparser.NoSectionError):
             config.remove_option(section, option)
-        except configparser.NoSectionError:
-            pass
         with open(config_file, "w") as f:
             config.write(f)
 
@@ -307,7 +308,7 @@ def prune_batch_jobs():
         region = section.split(" ")[2]
         aws.set_profile(profile)
         aws.set_region(region)
-        for job_id in config[section].keys():
+        for job_id in config[section]:
             response = aws.clients["batch"].describe_jobs(jobs=[job_id])
             if not response.get("jobs"):
                 remove_resource(section, job_id)
@@ -350,7 +351,7 @@ def prune_images():
             if images:
                 c = docker.from_env()
                 exists["local_images"] = any(
-                    [bool(c.images.list(name=im)) for im in images]
+                    bool(c.images.list(name=im)) for im in images
                 )
             else:
                 exists["local_images"] = False
