@@ -9,6 +9,7 @@ Ideally, the cloudknot user should never have to use these functions to
 interact with the cloudknot config file. Each cloudknot object maintains
 references to its state in the config file.
 """
+
 import botocore
 import configparser
 import docker

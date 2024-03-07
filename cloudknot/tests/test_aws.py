@@ -21,6 +21,7 @@ The tests for each resource all follow the same pattern:
   - Confirm that they were removed from the config file.
 * Other tests of improper input
 """
+
 import botocore
 import cloudknot as ck
 import configparser
