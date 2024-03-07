@@ -34,20 +34,6 @@ def pull_and_push_base_images(region, profile, ecr_repo):
     module_logger.info("Pulling base image {b:s}".format(b=py_base))
     cli.pull(py_base)
 
-    if profile != "from-env":
-        cmd = [
-            "aws",
-            "ecr",
-            "get-login",
-            "--no-include-email",
-            "--region",
-            region,
-            "--profile",
-            profile,
-        ]
-    else:
-        cmd = ["aws", "ecr", "get-login", "--no-include-email", "--region", region]
-
     # Refresh the aws ecr login credentials
     refresh_clients()
 
