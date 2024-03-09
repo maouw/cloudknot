@@ -6,16 +6,14 @@ import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
+import base64
 from pipreqs import pipreqs
 from string import Template
 
 from . import aws
 from . import config as ckconfig
 from .aws.base_classes import (
-    get_region,
-    get_profile,
     ResourceClobberedException,
     CloudknotInputError,
     CloudknotConfigurationError,
@@ -774,27 +772,13 @@ class DockerImage(aws.NamedObject):
             self._repo_registry_id = repo_info["registry_id"]
             self._repo_name = repo_info["repo_name"]
 
-        fallback = "from_env"
-        if get_profile(fallback=fallback) != fallback:
-            cmd = [
-                "aws",
-                "ecr",
-                "get-login",
-                "--no-include-email",
-                "--region",
-                get_region(),
-                "--profile",
-                get_profile(),
-            ]
-        else:
-            cmd = [
-                "aws",
-                "ecr",
-                "get-login",
-                "--no-include-email",
-                "--region",
-                get_region(),
-            ]
+        response = aws.clients["ecr"].get_authorization_token()
+        username, password = (
+            base64.b64decode(response["authorizationData"][0]["authorizationToken"])
+            .decode()
+            .split(":")
+        )
+        registry = response["authorizationData"][0]["proxyEndpoint"]
 
         # Determine if we're running in moto for CI
         # by retrieving the account ID
@@ -831,33 +815,18 @@ class DockerImage(aws.NamedObject):
                 )
         else:
             # Then we're actually doing this thing. Use the Docker CLI
-            # Refresh the aws ecr login credentials
-            login_cmd = subprocess.check_output(cmd, shell=is_windows)
+            # Use docker low-level APIClient for login and tagging
+            c = docker.from_env().api
 
-            # Login
-            login_cmd_list = (
-                login_cmd.decode("ASCII").rstrip("\n").rstrip("\r").split(" ")
-            )
-            login_result = subprocess.run(
-                login_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-
-            # If login failed, pass error to user
-            if login_result.returncode:  # pragma: nocover
+            try:
+                c.login(username, password, registry=registry)
+            except docker.errors.APIError as e:
                 raise CloudknotConfigurationError(
-                    "Unable to login to AWS ECR using the command:\n"
-                    "\t{login:s}\nReturned exit code = {code}\n"
-                    "STDOUT: {out:s}\nSTDERR: {err:s}\n".format(
-                        login=login_cmd.decode(),
-                        code=login_result.returncode,
-                        out=login_result.stdout.decode(),
-                        err=login_result.stderr.decode(),
-                    )
+                    "Unable to login to AWS ECR using the Docker CLI. "
+                    "Returned error: {err:s}".format(err=e)
                 )
 
-            # Use docker low-level APIClient for tagging
-            c = docker.from_env().api
-            # And the image client for pushing
+            # Useimage client for pushing
             cli = docker.from_env().images
             for im in self.images:
                 # Log tagging info

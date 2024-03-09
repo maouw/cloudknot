@@ -1,7 +1,6 @@
 import docker
 import logging
 import os
-import base64
 import configparser
 from .base import Base
 from ..aws import (
@@ -17,6 +16,8 @@ from ..aws import (
     list_profiles,
 )
 from ..config import add_resource, rlock
+from base64 import b64decode
+import botocore
 
 module_logger = logging.getLogger(__name__)
 is_windows = os.name == "nt"
@@ -37,16 +38,25 @@ def pull_and_push_base_images(region, profile, ecr_repo):
     # Refresh the aws ecr login credentials
     refresh_clients()
 
-    response = clients["ecr"].get_authorization_token()
+    try:
+        response = clients["ecr"].get_authorization_token()
+    except botocore.exceptions.ClientError as e:
+        raise RuntimeError(
+            "Could not get ECR authorization token to log in to the Docker registry"
+        ) from e
+
     username, password = (
-        base64.b64decode(response["authorizationData"][0]["authorizationToken"])
+        b64decode(response["authorizationData"][0]["authorizationToken"])
         .decode()
         .split(":")
     )
     registry = response["authorizationData"][0]["proxyEndpoint"]
 
-    # Login
-    c.login(username, password, registry=registry)
+    try:
+        # Log in to the Docker registry using the AWS ECR token
+        c.login(username, password, registry=registry)
+    except docker.errors.DockerException as e:
+        raise RuntimeError(f"Could not log in to the Docker registry {registry}") from e
 
     repo = DockerRepo(name=ecr_repo)
 
@@ -66,25 +76,19 @@ def pull_and_push_base_images(region, profile, ecr_repo):
         module_logger.debug(line)
 
 
-class InteractivePrompter(object):
-    @staticmethod
-    def mask_value(current_value):
-        return None if current_value is None else "*" * 16 + current_value[-4:]
-
-    def get_value(self, current_value, config_name, prompt_text=""):
-        if config_name in ("aws_access_key_id", "aws_secret_access_key"):
-            current_value = __class__.mask_value(current_value)
-        response = input("%s [%s]: " % (prompt_text, current_value))
-        if not response:
-            # If the user hits enter, we return a value of None
-            # instead of an empty string.  That way we can determine
-            # whether or not a value has changed.
-            response = None
-        return response
-
-
 class Configure(Base):
     """Run `aws configure` and set up cloudknot AWS ECR repository"""
+
+    @staticmethod
+    def _interactive_prompt(current_value, config_name, prompt_text=""):
+        """Prompt the user for a value, masking the current value if it exists"""
+        if (
+            config_name in ("aws_access_key_id", "aws_secret_access_key")
+            and current_value is not None
+        ):
+            current_value = "*" * 16 + current_value[-4:]
+        response = input("%s [%s]: " % (prompt_text, current_value))
+        return None if not response else response
 
     def run(self):
         print(
@@ -107,17 +111,19 @@ class Configure(Base):
             profile = get_profile(fallback="default")
             profiles = list_profiles()
 
-            credentials_config = configparser.ConfigParser()
-            if os.path.exists(profiles.credentials_file):
-                credentials_config.read(profiles.credentials_file)
+            # Set up AWS configuration like `aws configure` from awscli:
 
-            updated_credentials = False
+            # Set up credentials config (default in ~/.aws/credentials):
+            credentials_config = configparser.ConfigParser()
+            credentials_config.read(profiles.credentials_file)
+            updated_credentials = False  # Flag to refresh if credentials updated
+
+            # Prompt for AWS credentials to set up or update:
             for config_name, prompt_text in (
                 ("aws_access_key_id", "AWS Access Key ID"),
                 ("aws_secret_access_key", "AWS Secret Access Key"),
             ):
-                prompter = InteractivePrompter()
-                new_value = prompter.get_value(
+                new_value = self._interactive_prompt(
                     current_value=credentials_config.get(
                         profile, config_name, fallback=None
                     ),
@@ -128,25 +134,50 @@ class Configure(Base):
                     if profile not in credentials_config:
                         credentials_config.add_section(profile)
                     credentials_config.set(profile, config_name, new_value)
+                    # Write the updated credentials back to the file:
                     with open(profiles.credentials_file, "w") as f:
                         credentials_config.write(f)
-                    updated_credentials = True
+                        updated_credentials = True
+
+        # Set up aws config (default in ~/.aws/config):
+        aws_config = configparser.ConfigParser(default_section="default")
+        aws_config.read(profiles.aws_config_file)
+
+        # Prompt for default region name to set up or update:
+        for config_name, prompt_text in (("region", "Default region name"),):
+            new_value = self._interactive_prompt(
+                current_value=aws_config.get(profile, config_name, fallback=None),
+                config_name=config_name,
+                prompt_text=prompt_text,
+            )
+            if new_value is not None:
+                aws_config.set("default", config_name, new_value)
+                # Write the updated aws config back to the file:
+                with open(profiles.aws_config_file, "w") as f:
+                    aws_config.write(f)
+
+        # Create an empty aws config file if it doesn't exist:
+        if not os.path.exists(profiles.aws_config_file):
+            with open(profiles.aws_config_file, "w") as f:
+                f.writelines("[default]")
+
+        # Refresh the clients if the credentials were updated:
         if updated_credentials:
             refresh_clients()
 
-        values_to_prompt = [
+        # Proceed with the cloudknot-specific configuration:
+        values_to_prompt = (
             # (config_name, prompt_text, getter, setter)
             ("profile", "AWS profile to use", get_profile, set_profile),
             ("region", "Default region name", get_region, set_region),
             ("ecr_repo", "Default AWS ECR repository name", get_ecr_repo, set_ecr_repo),
-        ]
+        )
 
         values = {}
         for config_name, prompt_text, getter, setter in values_to_prompt:
-            prompter = InteractivePrompter()
             default_value = getter()
 
-            new_value = prompter.get_value(
+            new_value = self._interactive_prompt(
                 current_value=default_value,
                 config_name=config_name,
                 prompt_text=prompt_text,
