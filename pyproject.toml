@@ -5,7 +5,7 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" }]
 maintainers = [
-	{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" }
+	{ name = "Adam Richie-Halford", email = "richiehalford@gmail.com" },
 ]
 description = "Cloudknot: a python library designed to run your existing python code on AWS Batch"
 readme = "README.md"
@@ -16,7 +16,7 @@ classifiers = [
 	"License :: OSI Approved :: MIT License",
 	"Operating System :: OS Independent",
 	"Programming Language :: Python",
-	"Topic :: Scientific/Engineering"
+	"Topic :: Scientific/Engineering",
 ]
 dependencies = [
 	"awscli>=1.32.60,<2",
@@ -34,17 +34,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-	"black>=24.2.0,<25",
 	"coverage>=7.4,<8",
-	"flake8>=7.0.0,<8",
 	"moto[cloudformation]==4.1.5",
 	"numpydoc>=1.6.0,<2",
 	"pre-commit>=3.6.2,<4",
-	"pydocstyle>=6.3.0,<7",
 	"pytest-cov>=4.1.0,<5",
 	"pytest-xdist[psutil]==2.1.0",
 	"pytest>=8.0.0,<9",
-	"sphinx>=5.3.0,<6"
+	"sphinx>=5.3.0,<6",
 ]
 maint = ["rapidfuzz>=3.6.2,<4"]
 examples = ["ipykernel>=6.29.3,<7", "numpy>=1.26.4,<2"]
@@ -64,43 +61,83 @@ package-data = { "cloudknot" = [
 	"data/*/*",
 	"data/*/*/*",
 	"data/*/*/*/*",
-	"templates/*"
+	"templates/*",
 ] }
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules"
 norecursedirs = "cloudknot/data"
 
-[tool.black]
+[tool.ruff]
 line-length = 88
-target-version = ["py310", "py311", "py312"]
-extend-exclude = '''
-(
-	/(
-		\.eggs         # exclude a few common directories in the
-		| \.git          # root of the project
-		| \.github
-		| \.idea
-		| \.ipynb_checkpoints
-		| \.hg
-		| \.pytest_cache
-		| \.tox
-		| \.venv
-		| cloudknot/data
-		| cloudknot.egg-info
-		| examples
-		| doc
-		| build
-		| dist
-	)/
-	| _version.py
-	| cli.py
-)
-'''
+target-version = "py310"
+include = ["pyproject.toml", "cloudknot/**/*.py"]
 
-[tool.pydocstyle]
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = [
+	"C90",	 	# mccabe
+	"E",	 	# pycodestyle
+	"F", 	 	# pyflakes
+	"W", 	 	# pycodestyle
+	"B", 	 	# flake8-bugbear
+	"D",	 	# pydocstyle
+#	"ISC", 	 	# flake8-implicit-str-concat
+#	"YTT", 	 	# flake8-2020 for misuse of sys.version or sys.version_info
+#	"BLE", 	 	# flake8-blind-except
+#	"A", 	 	# flake8-builtins
+#	"C4", 	 	# flake8-comprehensions
+#	"DTZ", 	 	# flake8-datetimez
+	#"G", 	 	# flake8-logging-format
+	#"PT", 	 	# flake8-pytest-style
+#	"Q", 	 	# flake8-quotes
+#	"RET", 	 	# flake8-return
+#	"SIM", 	 	# flake8-simplify
+#	"ARG", 	 	# flake8-unused-arguments
+#	"PL", 	 	# pylint
+#	"FLY002", 	# flynt: static-join-to-f-string
+#	"LOG", 	 	# flake8-logging
+#	"RUF", 	 	# ruff-specific
+#	"PERF",  	# Perflint
+#	"I" 	 	# isort
+]
+
+extend-ignore = [
+	"E501",
+	"N802",
+	"N806",
+	"E203",
+	"C408",
+	"PLE1205",
+	"ISC001",
+	"RUF005",
+	"FLY002",
+	"PLR0913",
+	"PLR2004",
+	"PLR0912",
+	"PLR0915",
+	"C901",
+	"D400",
+	"PERF203",
+	"B904"
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"cloudknot/_version.py" = ["D"]
+"cloudknot/aws/__init__.py" = ["F403"]
+"cloudknot/aws/*" = ["D100", "D103"]
+"cloudknot/data/*" = ["D"]
+"cloudknot/commands/*" = ["D"]
+"cloudknot/tests/*" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
 convention = "numpy"
-match = "(?!_version).*\\.py"
-match-dir = "cloudknot"
-
-

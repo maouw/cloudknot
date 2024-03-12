@@ -11,13 +11,15 @@ Options:
   -h --help                         Show this screen.
   --version                         Show version.
 
-Examples:
+Examples
+--------
   cloudknot configure
 
 Help:
   For help using this tool, please see the Github repository:
   https://github.com/nrdg/cloudknot
 """
+
 from docopt import docopt
 from inspect import getmembers, isclass
 
@@ -32,7 +34,7 @@ def main():
 
     # Here we try to dynamically match the command the user is trying to run
     # with a pre-defined command class we've already created
-    for (k, v) in options.items():
+    for k, v in options.items():
         if hasattr(cloudknot.commands, k) and v:
             module = getattr(cloudknot.commands, k)
             cloudknot.commands = getmembers(module, isclass)

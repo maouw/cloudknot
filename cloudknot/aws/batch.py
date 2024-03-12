@@ -358,8 +358,9 @@ class BatchJob(NamedObject):
         cloudknot.config.add_resource(self._section_name, job_id, self.name)
 
         mod_logger.info(
-            "Submitted batch job {name:s} with jobID "
-            "{job_id:s}".format(name=self.name, job_id=job_id)
+            "Submitted batch job {name:s} with jobID " "{job_id:s}".format(
+                name=self.name, job_id=job_id
+            )
         )
 
         return job_id
@@ -478,8 +479,9 @@ class BatchJob(NamedObject):
 
         if not result_retrieved:
             raise CKTimeoutError(
-                "Result not available in bucket {bucket:s} with key {key:s}"
-                "".format(bucket=bucket, key=key)
+                "Result not available in bucket {bucket:s} with key {key:s}".format(
+                    bucket=bucket, key=key
+                )
             )
 
         return pickle.loads(response.get("Body").read())

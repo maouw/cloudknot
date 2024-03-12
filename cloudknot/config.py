@@ -167,7 +167,7 @@ def is_valid_stack(stack_id):
         response = aws.clients["cloudformation"].describe_stacks(StackName=stack_id)
     except aws.clients["cloudformation"].exceptions.ClientError as e:
         error_code = e.response.get("Error").get("Message")
-        no_stack_code = "Stack with id {0:s} does not exist" "".format(stack_id)
+        no_stack_code = "Stack with id {0:s} does not exist".format(stack_id)
         if error_code == no_stack_code:
             return False
         else:  # pragma: nocover

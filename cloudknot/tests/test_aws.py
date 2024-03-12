@@ -174,7 +174,7 @@ def test_get_tags(aws_credentials):
     def is_eq_list_of_dicts(lst0, lst1):
         sort0 = sorted(lst0, key=lambda d: d["Key"])
         sort1 = sorted(lst1, key=lambda d: d["Key"])
-        return all([pair0 == pair1 for pair0, pair1 in zip(sort0, sort1)])
+        return all([pair0 == pair1 for pair0, pair1 in zip(sort0, sort1, strict=False)])
 
     assert is_eq_list_of_dicts(ref_dicts, tags_with_name_only)
 

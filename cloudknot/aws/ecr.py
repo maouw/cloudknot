@@ -31,9 +31,7 @@ def _get_repo_info_from_uri(repo_uri):
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
 class DockerRepo(NamedObject):
-    """
-    Class for creating and managing remote docker repositories.
-    """
+    """Class for creating and managing remote docker repositories."""
 
     def __init__(self, name, aws_resource_tags=None):
         """Initialize a Docker repo object.
@@ -144,8 +142,9 @@ class DockerRepo(NamedObject):
             )
         else:
             mod_logger.info(
-                "Repository {name:s} already exists at "
-                "{uri:s}".format(name=self.name, uri=repo_uri)
+                "Repository {name:s} already exists at " "{uri:s}".format(
+                    name=self.name, uri=repo_uri
+                )
             )
 
         try:

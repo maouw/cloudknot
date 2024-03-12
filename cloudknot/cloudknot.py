@@ -954,36 +954,41 @@ class Knot(aws.NamedObject):
             pars_name = config.get(self._knot_name, "pars")
             self._pars = Pars(name=pars_name)
             mod_logger.info(
-                "Knot {name:s} adopted PARS "
-                "{p:s}".format(name=self.name, p=self.pars.name)
+                "Knot {name:s} adopted PARS " "{p:s}".format(
+                    name=self.name, p=self.pars.name
+                )
             )
 
             image_name = config.get(self._knot_name, "docker-image")
             self._docker_image = dockerimage.DockerImage(name=image_name)
             mod_logger.info(
-                "Knot {name:s} adopted docker image {dr:s}"
-                "".format(name=self.name, dr=image_name)
+                "Knot {name:s} adopted docker image {dr:s}".format(
+                    name=self.name, dr=image_name
+                )
             )
 
             if not self.docker_image.images:
                 self.docker_image.build(tags=image_tags, nocache=no_image_cache)
                 mod_logger.info(
-                    "knot {name:s} built docker image {i!s}"
-                    "".format(name=self.name, i=self.docker_image.images)
+                    "knot {name:s} built docker image {i!s}".format(
+                        name=self.name, i=self.docker_image.images
+                    )
                 )
 
             if self.docker_image.repo_uri is None:
                 repo_name = config.get(self._knot_name, "docker-repo")
                 self._docker_repo = aws.DockerRepo(name=repo_name)
                 mod_logger.info(
-                    "Knot {name:s} adopted docker repository "
-                    "{dr:s}".format(name=self.name, dr=repo_name)
+                    "Knot {name:s} adopted docker repository " "{dr:s}".format(
+                        name=self.name, dr=repo_name
+                    )
                 )
 
                 self.docker_image.push(repo=self.docker_repo)
                 mod_logger.info(
-                    "Knot {name:s} pushed docker image {dr:s}"
-                    "".format(name=self.name, dr=self.docker_image.name)
+                    "Knot {name:s} pushed docker image {dr:s}".format(
+                        name=self.name, dr=self.docker_image.name
+                    )
                 )
             else:
                 self._docker_repo = None
@@ -1267,8 +1272,9 @@ class Knot(aws.NamedObject):
                     di = input_docker_image
 
                     mod_logger.info(
-                        "Knot {name:s} adopted docker image {i:s}"
-                        "".format(name=knot_name, i=docker_image.name)
+                        "Knot {name:s} adopted docker image {i:s}".format(
+                            name=knot_name, i=docker_image.name
+                        )
                     )
                 else:
                     # Create and build the docker image
@@ -1284,8 +1290,9 @@ class Knot(aws.NamedObject):
                 if not di.images:
                     di.build(tags=tags, nocache=no_image_cache)
                     mod_logger.info(
-                        "knot {name:s} built docker image {i!s}"
-                        "".format(name=knot_name, i=di.images)
+                        "knot {name:s} built docker image {i!s}".format(
+                            name=knot_name, i=di.images
+                        )
                     )
 
                 if di.repo_uri is None:
@@ -1309,8 +1316,9 @@ class Knot(aws.NamedObject):
                     dr = aws.DockerRepo(name=repo_name_)
 
                     mod_logger.info(
-                        "knot {name:s} created/adopted docker repo "
-                        "{r:s}".format(name=knot_name, r=dr.name)
+                        "knot {name:s} created/adopted docker repo " "{r:s}".format(
+                            name=knot_name, r=dr.name
+                        )
                     )
 
                     # Push to remote repo

@@ -483,7 +483,7 @@ def test_DockerImage(cleanup_repos):
         tags = ["testing", ["testing1", "testing2"]]
         image_names = [None, "testing_image"]
 
-        for idx, (tag, n) in enumerate(zip(tags, image_names)):
+        for idx, (tag, n) in enumerate(zip(tags, image_names, strict=False)):
             di.build(tags=tag, image_name=n)
 
             n = n if n else "cloudknot/" + di.name

@@ -64,8 +64,9 @@ def pull_and_push_base_images(region, profile, ecr_repo):
 
     # Log push info
     module_logger.info(
-        "Pushing base image {name:s} to ecr repository {repo:s}"
-        "".format(name=py_base, repo=repo.repo_uri)
+        "Pushing base image {name:s} to ecr repository {repo:s}".format(
+            name=py_base, repo=repo.repo_uri
+        )
     )
 
     for line in cli.push(repository=repo.repo_uri, tag=ecr_tag, stream=True):

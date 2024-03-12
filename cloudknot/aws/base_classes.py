@@ -391,7 +391,7 @@ def set_s3_params(bucket, policy=None, sse=None):
                 PolicyName=policy,
                 Path="/cloudknot/",
                 PolicyDocument=json.dumps(s3_policy_doc),
-                Description="Grants access to S3 bucket {0:s}" "".format(bucket),
+                Description="Grants access to S3 bucket {0:s}".format(bucket),
             )
         except clients["iam"].exceptions.EntityAlreadyExistsException:
             # Policy already exists, do nothing
