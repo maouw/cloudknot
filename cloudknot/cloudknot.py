@@ -1,4 +1,5 @@
 """Create Pars and Knot classes which represent AWS Cloudformation stack."""
+
 import botocore
 import configparser
 import ipaddress

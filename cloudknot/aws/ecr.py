@@ -56,9 +56,11 @@ class DockerRepo(NamedObject):
         # Validate aws_resource_tags input before creating any resources
         self._tags = get_tags(
             name=name,
-            additional_tags={"Project": "Cloudknot global config"}
-            if aws_resource_tags is None
-            else aws_resource_tags,
+            additional_tags=(
+                {"Project": "Cloudknot global config"}
+                if aws_resource_tags is None
+                else aws_resource_tags
+            ),
         )
 
         # Create repo

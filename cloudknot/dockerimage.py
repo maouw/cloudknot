@@ -1,4 +1,5 @@
 """Create, build, push, and manage Docker images for use in Cloudknot."""
+
 import configparser
 import docker
 import inspect
@@ -326,11 +327,13 @@ class DockerImage(aws.NamedObject):
 
                 self._script_path = os.path.abspath(script_path)
                 super(DockerImage, self).__init__(
-                    name=name
-                    if name
-                    else os.path.splitext(os.path.basename(self.script_path))[0]
-                    .replace("_", "-")
-                    .replace(".", "-")
+                    name=(
+                        name
+                        if name
+                        else os.path.splitext(os.path.basename(self.script_path))[0]
+                        .replace("_", "-")
+                        .replace(".", "-")
+                    )
                 )
 
                 # Set the parent directory
