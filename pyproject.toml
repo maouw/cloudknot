@@ -41,6 +41,7 @@ dev = [
 	"pytest-cov>=4.1.0,<5",
 	"pytest-xdist[psutil]==2.1.0",
 	"pytest>=8.0.0,<9",
+	"ruff>=0.3.2,<1",
 	"sphinx>=5.3.0,<6",
 ]
 maint = ["rapidfuzz>=3.6.2,<4"]
@@ -99,11 +100,11 @@ select = [
 #	"DTZ", 	 	# flake8-datetimez
 	#"G", 	 	# flake8-logging-format
 	#"PT", 	 	# flake8-pytest-style
-#	"Q", 	 	# flake8-quotes
+	"Q", 	 	# flake8-quotes
 #	"RET", 	 	# flake8-return
 #	"SIM", 	 	# flake8-simplify
 #	"ARG", 	 	# flake8-unused-arguments
-#	"PL", 	 	# pylint
+	"PL", 	 	# pylint
 #	"FLY002", 	# flynt: static-join-to-f-string
 #	"LOG", 	 	# flake8-logging
 #	"RUF", 	 	# ruff-specific
