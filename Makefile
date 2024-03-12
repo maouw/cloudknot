@@ -1,9 +1,10 @@
-.PHONY: clean clean-test clean-pyc clean-build flake lint
+.PHONY: clean clean-test clean-pyc clean-build flake lint ruff
 
-flake:
-	flake8
-	black --check .
-	pydocstyle
+ruff:
+	ruff check .
+	ruff format --check .
+
+flake: ruff
 
 lint: flake
 
