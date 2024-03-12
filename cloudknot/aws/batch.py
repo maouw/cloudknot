@@ -522,14 +522,12 @@ class BatchJob(NamedObject):
         status = self.status
         if status["status"] == "FAILED":
             raise BatchJobFailedError(self.job_id)
+        elif self.array_job:
+            return [
+                self._collect_array_job_result(idx) for idx in range(len(self.input))
+            ]
         else:
-            if self.array_job:
-                return [
-                    self._collect_array_job_result(idx)
-                    for idx in range(len(self.input))
-                ]
-            else:
-                return self._collect_array_job_result()
+            return self._collect_array_job_result()
 
     def terminate(self, reason):
         """
