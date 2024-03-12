@@ -28,11 +28,10 @@ jobs:
           mkdir ~/.aws
           touch ~/.aws/credentials
           printf "[aws]\nconfigured = True\n" > ~/.aws/cloudknot
-      - name: Lint with flake8
+      - name: Lint with ruff
         run: |
-          flake8
-          black --check .
-          pydocstyle
+          ruff check
+          ruff format --check
       - name: Test
         run: |
           pytest --pyargs cloudknot --cov-report term-missing --cov-config .coveragerc --cov=cloudknot
