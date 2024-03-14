@@ -1,4 +1,9 @@
+SHELL := bash
+
+.ONESHELL:
+
 .PHONY: clean clean-test clean-pyc clean-build flake lint ruff
+
 
 ruff:
 	ruff check .
@@ -39,4 +44,15 @@ dist: clean ## Build source and wheel package
 	python setup.py sdist
 	python setup.py bdist_wheel --universal
 	ls -l dist
+
+MISE_USE_PYTHON ?= 3.10
+
+use-python:
+	mise local python@$(MISE_USE_PYTHON) && mise install
+
+venv:
+	command -v deactivate >/dev/null 2>&1 && deactivate
+	rm -rf .venv
+	python -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install --upgrade setuptools wheel setuptools_scm ipython && pip install -e '.[dev]'
+
 

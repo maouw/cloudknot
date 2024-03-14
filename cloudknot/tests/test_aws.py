@@ -35,6 +35,7 @@ import tenacity
 import uuid
 from moto import mock_batch, mock_cloudformation, mock_ec2, mock_ecr
 from moto import mock_ecs, mock_iam, mock_s3
+import contextlib
 
 bucket_name = "ck-test-bucket-" + str(uuid.uuid4()).replace("-", "")[:6]
 
@@ -140,10 +141,8 @@ def bucket_cleanup(aws_credentials):
         for role in roles:
             iam.detach_role_policy(RoleName=role["RoleName"], PolicyArn=arn)
 
-        try:
+        with contextlib.suppress(Exception):
             iam.delete_policy(PolicyArn=arn)
-        except Exception:
-            pass
 
     if old_s3_params:
         ck.set_s3_params(
@@ -313,18 +312,14 @@ def test_get_region(bucket_cleanup):
         if old_config_file:
             os.environ["CLOUDKNOT_CONFIG_FILE"] = old_config_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["CLOUDKNOT_CONFIG_FILE"]
-            except KeyError:
-                pass
 
         if old_region_env:
             os.environ["AWS_DEFAULT_REGION"] = old_region_env
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["AWS_DEFAULT_REGION"]
-            except KeyError:
-                pass
 
         ck.refresh_clients()
 
@@ -361,10 +356,8 @@ def test_set_region(bucket_cleanup):
         if old_config_file:
             os.environ["CLOUDKNOT_CONFIG_FILE"] = old_config_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["CLOUDKNOT_CONFIG_FILE"]
-            except KeyError:
-                pass
 
         ck.refresh_clients()
 
@@ -399,18 +392,14 @@ def test_list_profiles(bucket_cleanup):
         if old_credentials_file:
             os.environ["AWS_SHARED_CREDENTIALS_FILE"] = old_credentials_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["AWS_SHARED_CREDENTIALS_FILE"]
-            except KeyError:
-                pass
 
         if old_aws_config_file:
             os.environ["AWS_CONFIG_FILE"] = old_aws_config_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["AWS_CONFIG_FILE"]
-            except KeyError:
-                pass
 
 
 @mock_all
@@ -463,26 +452,20 @@ def test_get_profile(bucket_cleanup):
         if old_credentials_file:
             os.environ["AWS_SHARED_CREDENTIALS_FILE"] = old_credentials_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["AWS_SHARED_CREDENTIALS_FILE"]
-            except KeyError:
-                pass
 
         if old_aws_config_file:
             os.environ["AWS_CONFIG_FILE"] = old_aws_config_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["AWS_CONFIG_FILE"]
-            except KeyError:
-                pass
 
         if old_ck_config_file:
             os.environ["CLOUDKNOT_CONFIG_FILE"] = old_ck_config_file
         else:
-            try:
+            with contextlib.suppress(KeyError):
                 del os.environ["CLOUDKNOT_CONFIG_FILE"]
-            except KeyError:
-                pass
 
         ck.refresh_clients()
 

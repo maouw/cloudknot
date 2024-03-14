@@ -1,11 +1,11 @@
-import botocore
-import cloudknot.config
-import logging
+"""Classes for creating and managing remote docker repositories."""
 
-try:
-    from collections.abc import namedtuple
-except ImportError:
-    from collections import namedtuple
+import logging
+from collections import namedtuple
+
+import botocore.exceptions
+
+import cloudknot.config
 
 from .base_classes import NamedObject, clients, get_ecr_repo, get_tags
 
@@ -19,9 +19,9 @@ def _get_repo_info_from_uri(repo_uri):
 
     _repo_uri = repo_uri.split(":")[0]
     # Filter by matching on repo_uri
-    matching_repo = [
+    matching_repo = next(
         repo for repo in repositories if repo["repositoryUri"] == _repo_uri
-    ][0]
+    )
 
     return {
         "registry_id": matching_repo["registryId"],
@@ -54,11 +54,9 @@ class DockerRepo(NamedObject):
         # Validate aws_resource_tags input before creating any resources
         self._tags = get_tags(
             name=name,
-            additional_tags=(
-                {"Project": "Cloudknot global config"}
-                if aws_resource_tags is None
-                else aws_resource_tags
-            ),
+            additional_tags={"Project": "Cloudknot global config"}
+            if aws_resource_tags is None
+            else aws_resource_tags,
         )
 
         # Create repo
@@ -100,6 +98,8 @@ class DockerRepo(NamedObject):
         # so we predefine it here. Also, it should be predefined as a
         # string to pass parameter validation by boto.
         repo_arn = "test"
+        repo_created = False
+        repo_name = repo_registry_id = repo_uri = None
         try:
             # If repo exists, retrieve its info
             response = clients["ecr"].describe_repositories(repositoryNames=[self.name])
@@ -142,7 +142,7 @@ class DockerRepo(NamedObject):
             )
         else:
             mod_logger.info(
-                "Repository {name:s} already exists at " "{uri:s}".format(
+                "Repository {name:s} already exists at {uri:s}".format(
                     name=self.name, uri=repo_uri
                 )
             )

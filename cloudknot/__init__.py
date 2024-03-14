@@ -3,31 +3,47 @@
 import errno
 import logging
 import os
+import shutil
 import subprocess
 
-from . import aws  # noqa
-from . import config  # noqa
-from .aws.base_classes import get_profile, set_profile, list_profiles  # noqa
-from .aws.base_classes import get_region, set_region  # noqa
-from .aws.base_classes import get_ecr_repo, set_ecr_repo  # noqa
-from .aws.base_classes import get_s3_params, set_s3_params  # noqa
-from .aws.base_classes import refresh_clients  # noqa
+from . import (
+    aws,  # noqa
+    config,  # noqa
+)
+from ._version import version as __version__  # noqa
+from .aws.base_classes import (  # noqa  # noqa  # noqa  # noqa
+    get_ecr_repo,
+    get_profile,
+    get_region,
+    get_s3_params,
+    list_profiles,
+    refresh_clients,
+    set_ecr_repo,
+    set_profile,
+    set_region,
+    set_s3_params,
+)
 from .cloudknot import *  # noqa
 from .dockerimage import *  # noqa
-from ._version import version as __version__  # noqa
+
+if shutil.which("docker") is None:
+    raise FileNotFoundError(
+        "Could not find the 'docker' executable in your PATH."
+        "To install Docker, consult https://docs.docker.com/engine/installation"
+    )
 
 try:
-    fnull = open(os.devnull, "w")
     subprocess.check_call(
-        "docker version", shell=True, stdout=fnull, stderr=subprocess.STDOUT
+        ["docker", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+except FileNotFoundError:
+    raise RuntimeError(
+        "It looks like you don't have Docker installed. Please go to https://docs.docker.com/engine/install to install it. Once installed, make sure that the Docker daemon is running before using cloudknot."
+    ) from None
 except subprocess.CalledProcessError:
-    raise ImportError(
-        "It looks like you don't have Docker installed or running. Please go "
-        "to https://docs.docker.com/engine/installation/ to install it. Once "
-        "installed, make sure that the Docker daemon is running before using "
-        "cloudknot."
-    )
+    raise RuntimeError(
+        "Docker daemon is not responding. Please go to https://docs.docker.com/engine/install for instructions on launching the Docker daemon."
+    ) from None
 
 module_logger = logging.getLogger(__name__)
 

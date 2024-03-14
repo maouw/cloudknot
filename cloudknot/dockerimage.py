@@ -1,26 +1,31 @@
 """Create, build, push, and manage Docker images for use in Cloudknot."""
 
+import collections.abc
 import configparser
-import docker
 import inspect
 import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
-from pipreqs import pipreqs
+from base64 import b64decode
 from string import Template
+
+import botocore.exceptions
+import docker
+import docker.errors
+from pipreqs import pipreqs
 
 from . import aws
 from . import config as ckconfig
+from .aws import clients
 from .aws.base_classes import (
-    get_region,
-    get_profile,
-    ResourceClobberedException,
-    CloudknotInputError,
     CloudknotConfigurationError,
+    CloudknotInputError,
+    ResourceClobberedException,
+    refresh_clients,
 )
+from .aws.ecr import DockerRepo
 from .config import get_config_file, rlock
 
 __all__ = ["DockerImage", "DEFAULT_PICKLE_PROTOCOL"]
@@ -163,7 +168,7 @@ class DockerImage(aws.NamedObject):
         # User must specify at least `name`, `func`, or `script_path`
         if not any([name, func, script_path]):
             raise CloudknotInputError(
-                "You must suppy either `name`, `func` " "or `script_path`."
+                "You must suppy either `name`, `func` or `script_path`."
             )
 
         # If `func` and `script_path` are specified, input is over-specified
@@ -301,7 +306,7 @@ class DockerImage(aws.NamedObject):
             else:
                 self._base_image = "python:3"
 
-            if self._base_image in ["python:3", "python:3.8"]:
+            if self._base_image in {"python:3", "python:3.8"}:
                 mod_logger.warning(
                     "Warning, your Dockerfile will have a base image of python:3, "
                     "which may default to Python 3.8. This may cause dependency "
@@ -311,7 +316,7 @@ class DockerImage(aws.NamedObject):
 
             # Validate dir_name input
             if dir_name and not os.path.isdir(dir_name):
-                raise CloudknotInputError("`dir_name` is not an existing " "directory")
+                raise CloudknotInputError("`dir_name` is not an existing directory")
 
             if script_path:
                 # User supplied a pre-existing python script.
@@ -327,13 +332,11 @@ class DockerImage(aws.NamedObject):
 
                 self._script_path = os.path.abspath(script_path)
                 super(DockerImage, self).__init__(
-                    name=(
-                        name
-                        if name
-                        else os.path.splitext(os.path.basename(self.script_path))[0]
-                        .replace("_", "-")
-                        .replace(".", "-")
-                    )
+                    name=name
+                    if name
+                    else os.path.splitext(os.path.basename(self.script_path))[0]
+                    .replace("_", "-")
+                    .replace(".", "-")
                 )
 
                 # Set the parent directory
@@ -409,7 +412,7 @@ class DockerImage(aws.NamedObject):
                 self._github_installs = list(github_installs)
             else:
                 raise CloudknotInputError(
-                    "github_installs must be a string " "or a sequence of strings."
+                    "github_installs must be a string or a sequence of strings."
                 )
 
             pattern = r"(https|git)(://github.com/).*/.*\.git($|@.*$|#egg=.*$)"
@@ -631,7 +634,7 @@ class DockerImage(aws.NamedObject):
             ]
 
         # If some imports were left out, store their names
-        pip_names = set([i["name"] for i in self.pip_imports])
+        pip_names = {i["name"] for i in self.pip_imports}
         self._missing_imports = list(set(import_names) - pip_names)
 
         if len(import_names) != (len(self.pip_imports) + len(self.github_installs)):
@@ -643,7 +646,12 @@ class DockerImage(aws.NamedObject):
                 "{missing!s}".format(missing=self.missing_imports)
             )
 
-    def build(self, tags, image_name=None, nocache=False):
+    def build(
+        self,
+        tags: (str | collections.abc.Iterable[str]),
+        image_name: (str | None) = None,
+        nocache: bool = False,
+    ):
         """Build a Docker image.
 
         Parameters
@@ -664,38 +672,26 @@ class DockerImage(aws.NamedObject):
                 "This docker image has already been clobbered.", self.name
             )
 
-        # Validate tags input
-        if isinstance(tags, str):
-            tags = [tags]
-        elif all(isinstance(x, str) for x in tags):
-            tags = [t for t in tags]
-        else:
-            raise CloudknotInputError(
-                "tags must be a string or a sequence " "of strings."
-            )
+        # Make tags a list if it is a string or flatten the iterable:
+        tags = [tags] if isinstance(tags, str) else list(tags)
 
         # Don't allow user to put "latest" in tags.
         if "latest" in tags:
             raise CloudknotInputError("Any tag is allowed, except for " '"latest."')
 
-        image_name = image_name if image_name else "cloudknot/" + self.name
+        image_name = image_name or "cloudknot/" + self.name
 
         images = [{"name": image_name, "tag": t} for t in tags]
         self._images += [im for im in images if im not in self.images]
 
         # Use docker low-level APIClient
         c = docker.from_env()
-        for im in images:
-            mod_logger.info(
-                "Building image {name:s} with tag {tag:s}".format(
-                    name=im["name"], tag=im["tag"]
-                )
-            )
-
+        for tag in tags:
+            mod_logger.info(f"Building image {image_name} with tag {tag}")
             c.images.build(
                 path=self.build_path,
                 dockerfile=self.docker_path,
-                tag=im["name"] + ":" + im["tag"],
+                tag=image_name + ":" + tag,
                 rm=True,
                 forcerm=True,
                 nocache=nocache,
@@ -715,7 +711,7 @@ class DockerImage(aws.NamedObject):
         config_images_list = config_images_str.split()
 
         # Convert images just build into list
-        current_images_list = [i["name"] + ":" + i["tag"] for i in images]
+        current_images_list = [image_name + ":" + t for t in tags]
 
         # Get the union of the two lists
         config_images = list(set(config_images_list) | set(current_images_list))
@@ -726,7 +722,7 @@ class DockerImage(aws.NamedObject):
         # Reload to config file
         ckconfig.add_resource(section_name, "images", config_images_str)
 
-    def push(self, repo=None, repo_uri=None):
+    def push(self, repo: (None | DockerRepo) = None, repo_uri: (None | str) = None):
         """Tag and push a Docker image to a repository.
 
         Parameters
@@ -746,13 +742,13 @@ class DockerImage(aws.NamedObject):
         # User must supply either a repo object or the repo name and uri
         if not (repo or repo_uri):
             raise CloudknotInputError(
-                "You must supply either `repo=" "<DockerRepo instance>` or `repo_uri`."
+                "You must supply either `repo=<DockerRepo instance>` or `repo_uri`."
             )
 
         # User cannot supply both repo and repo_name or repo_uri
         if repo and repo_uri:
             raise CloudknotInputError(
-                "You may not specify both a repo object " "and `repo_uri`."
+                "You may not specify both a repo object and `repo_uri`."
             )
 
         # Make sure that the user has called build first or somehow set tags.
@@ -776,28 +772,6 @@ class DockerImage(aws.NamedObject):
             repo_info = aws.ecr._get_repo_info_from_uri(repo_uri=repo_uri)
             self._repo_registry_id = repo_info["registry_id"]
             self._repo_name = repo_info["repo_name"]
-
-        fallback = "from_env"
-        if get_profile(fallback=fallback) != fallback:
-            cmd = [
-                "aws",
-                "ecr",
-                "get-login",
-                "--no-include-email",
-                "--region",
-                get_region(),
-                "--profile",
-                get_profile(),
-            ]
-        else:
-            cmd = [
-                "aws",
-                "ecr",
-                "get-login",
-                "--no-include-email",
-                "--region",
-                get_region(),
-            ]
 
         # Determine if we're running in moto for CI
         # by retrieving the account ID
@@ -835,36 +809,34 @@ class DockerImage(aws.NamedObject):
         else:
             # Then we're actually doing this thing. Use the Docker CLI
             # Refresh the aws ecr login credentials
-            login_cmd = subprocess.check_output(cmd, shell=is_windows)
-
-            # Login
-            login_cmd_list = (
-                login_cmd.decode("ASCII").rstrip("\n").rstrip("\r").split(" ")
-            )
-            login_result = subprocess.run(
-                login_cmd_list,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-            # If login failed, pass error to user
-            if login_result.returncode:  # pragma: nocover
+            refresh_clients()
+            try:
+                response = clients["ecr"].get_authorization_token()
+            except botocore.exceptions.ClientError as e:
                 raise CloudknotConfigurationError(
-                    "Unable to login to AWS ECR using the command:\n"
-                    "\t{login:s}\nReturned exit code = {code}\n"
-                    "STDOUT: {out:s}\nSTDERR: {err:s}\n".format(
-                        login=login_cmd.decode(),
-                        code=login_result.returncode,
-                        out=login_result.stdout.decode(),
-                        err=login_result.stderr.decode(),
-                    )
-                )
+                    "Could not get ECR authorization token to log in to the Docker registry"
+                ) from e
+
+            username, password = (
+                b64decode(response["authorizationData"][0]["authorizationToken"])
+                .decode()
+                .split(":")
+            )
+            registry = response["authorizationData"][0]["proxyEndpoint"]
 
             # Use docker low-level APIClient for tagging
             c = docker.from_env().api
             # And the image client for pushing
             cli = docker.from_env().images
+
+            try:
+                # Log in to the Docker registry using the AWS ECR token
+                c.login(username, password, registry=registry)
+            except docker.errors.DockerException as e:
+                raise RuntimeError(
+                    f"Could not log in to the Docker registry {registry}"
+                ) from e
+
             for im in self.images:
                 # Log tagging info
                 mod_logger.info(
@@ -963,5 +935,5 @@ class DockerImage(aws.NamedObject):
         self._clobbered = True
 
         mod_logger.info(
-            "Removed local docker images " "{images!s}".format(images=self.images)
+            "Removed local docker images {images!s}".format(images=self.images)
         )

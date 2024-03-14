@@ -73,6 +73,8 @@ norecursedirs = "cloudknot/data"
 line-length = 88
 target-version = "py310"
 include = ["pyproject.toml", "cloudknot/**/*.py"]
+show-fixes = true
+output-format = "full"
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
@@ -126,10 +128,13 @@ extend-ignore = [
 	"PLR2004",
 	"PLR0912",
 	"PLR0915",
+	"PLR0917",
+	"PLR",
 	"C901",
 	"D400",
 	"PERF203",
-	"B904"
+	"B904",
+	"PLW1514",
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
@@ -139,6 +144,8 @@ extend-ignore = [
 "cloudknot/data/*" = ["D"]
 "cloudknot/commands/*" = ["D"]
 "cloudknot/tests/*" = ["D"]
+"cloudknot/cli.py" = ["PLC"]
+"cloudknot/cloudknot.py" = ["F841"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

@@ -9,6 +9,7 @@ import tempfile
 import uuid
 from moto import mock_batch, mock_cloudformation, mock_ec2, mock_ecr
 from moto import mock_ecs, mock_iam, mock_s3
+import contextlib
 
 bucket_name = "ck-test-bucket-" + str(uuid.uuid4()).replace("-", "")[:6]
 
@@ -102,10 +103,8 @@ def bucket_cleanup(aws_credentials):
         for role in roles:
             iam.detach_role_policy(RoleName=role["RoleName"], PolicyArn=arn)
 
-        try:
+        with contextlib.suppress(Exception):
             iam.delete_policy(PolicyArn=arn)
-        except Exception:
-            pass
 
     if old_s3_params:
         ck.set_s3_params(
@@ -486,9 +485,9 @@ def test_DockerImage(cleanup_repos):
         for idx, (tag, n) in enumerate(zip(tags, image_names, strict=False)):
             di.build(tags=tag, image_name=n)
 
-            n = n if n else "cloudknot/" + di.name
+            n = n or "cloudknot/" + di.name  # noqa: PLW2901 (redefined-loop-name)
             if isinstance(tag, str):
-                tag = [tag]
+                tag = [tag]  # noqa: PLW2901 (redefined-loop-name)
 
             images = [{"name": n, "tag": t} for t in tag]
             for im in images:

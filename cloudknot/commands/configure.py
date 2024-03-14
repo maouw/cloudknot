@@ -1,26 +1,31 @@
-import docker
 import logging
 import os
 import subprocess
+from base64 import b64decode
+
+import botocore.exceptions
+import docker
+import docker.errors
 from awscli.customizations.configure.configure import InteractivePrompter
 
-from .base import Base
 from ..aws import (
     DockerRepo,
+    clients,
+    get_ecr_repo,
     get_profile,
     get_region,
-    get_ecr_repo,
+    refresh_clients,
+    set_ecr_repo,
     set_profile,
     set_region,
-    set_ecr_repo,
 )
 from ..config import add_resource
+from .base import Base
 
 module_logger = logging.getLogger(__name__)
-is_windows = os.name == "nt"
 
 
-def pull_and_push_base_images(region, profile, ecr_repo):
+def pull_and_push_base_images(ecr_repo):
     # Use docker low-level APIClient for tagging
     c = docker.from_env().api
     # And the image client for pulling and pushing
@@ -32,27 +37,28 @@ def pull_and_push_base_images(region, profile, ecr_repo):
     module_logger.info("Pulling base image {b:s}".format(b=py_base))
     cli.pull(py_base)
 
-    if profile != "from-env":
-        cmd = [
-            "aws",
-            "ecr",
-            "get-login",
-            "--no-include-email",
-            "--region",
-            region,
-            "--profile",
-            profile,
-        ]
-    else:
-        cmd = ["aws", "ecr", "get-login", "--no-include-email", "--region", region]
-
     # Refresh the aws ecr login credentials
-    login_cmd = subprocess.check_output(cmd, shell=is_windows)
+    refresh_clients()
 
-    # Login
-    login_cmd = login_cmd.decode("ASCII").rstrip("\n").split(" ")
-    fnull = open(os.devnull, "w")
-    subprocess.call(login_cmd, stdout=fnull, stderr=subprocess.STDOUT, shell=is_windows)
+    try:
+        response = clients["ecr"].get_authorization_token()
+    except botocore.exceptions.ClientError as e:
+        raise RuntimeError(
+            "Could not get ECR authorization token to log in to the Docker registry"
+        ) from e
+
+    username, password = (
+        b64decode(response["authorizationData"][0]["authorizationToken"])
+        .decode()
+        .split(":")
+    )
+    registry = response["authorizationData"][0]["proxyEndpoint"]
+
+    try:
+        # Log in to the Docker registry using the AWS ECR token
+        c.login(username, password, registry=registry)
+    except docker.errors.DockerException as e:
+        raise RuntimeError(f"Could not log in to the Docker registry {registry}") from e
 
     repo = DockerRepo(name=ecr_repo)
 
@@ -85,7 +91,7 @@ class Configure(Base):
             "please follow the prompts to start using cloudknot.\n"
         )
 
-        subprocess.call("aws configure".split(" "), shell=is_windows)
+        subprocess.call("aws configure".split(" "), shell=(os.name == "nt"))
 
         print(
             "\n`aws configure` complete. Resuming configuration with "
@@ -123,6 +129,7 @@ class Configure(Base):
             "local machine and push the same docker image to your cloudknot "
             "repository on AWS ECR."
         )
+        refresh_clients()
 
         pull_and_push_base_images(
             region=values["region"],

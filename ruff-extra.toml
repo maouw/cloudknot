@@ -1,0 +1,54 @@
+
+extend = "pyproject.toml"
+output-format = "full"
+extend-exclude = ["tests", "data"]
+[lint]
+extend-select = [
+	"C90",	 	# mccabe
+	"E",	 	# pycodestyle
+	"F", 	 	# pyflakes
+	"W", 	 	# pycodestyle
+	"B", 	 	# flake8-bugbear
+	"D",	 	# pydocstyle
+	"ISC", 	 	# flake8-implicit-str-concat
+	"YTT", 	 	# flake8-2020 for misuse of sys.version or sys.version_info
+	"BLE", 	 	# flake8-blind-except
+	"A", 	 	# flake8-builtins
+	"C4", 	 	# flake8-comprehensions
+	"DTZ", 	 	# flake8-datetimez
+#	"G", 	 	# flake8-logging-format
+#	"PT", 	 	# flake8-pytest-style
+	"Q", 	 	# flake8-quotes
+	"RET", 	 	# flake8-return
+	"SIM", 	 	# flake8-simplify
+	"ARG", 	 	# flake8-unused-arguments
+	"PL", 	 	# pylint
+	"FLY002", 	# flynt: static-join-to-f-string
+	"LOG", 	 	# flake8-logging
+	"RUF", 	 	# ruff-specific
+	"PERF",  	# Perflint
+	"I" 	 	# isort
+]
+
+extend-ignore = [
+	"E501",
+	"N802",
+	"N806",
+	"E203",
+	"C408",
+	"PLE1205",
+	"ISC001",
+	"RUF005",
+	"FLY002",
+	"PLR0913",
+	"PLR2004",
+	"PLR0912",
+	"PLR0915",
+	"C901",
+	"D400",
+	"PERF203",
+	"B904",
+	"PLW1514",
+	"RUF005"
+]
+

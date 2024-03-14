@@ -1,4 +1,3 @@
-# noqa
 """
 cloudknot
 
@@ -20,8 +19,9 @@ Help:
   https://github.com/nrdg/cloudknot
 """
 
-from docopt import docopt
 from inspect import getmembers, isclass
+
+from docopt import docopt
 
 from . import __version__ as VERSION
 
@@ -38,8 +38,8 @@ def main():
         if hasattr(cloudknot.commands, k) and v:
             module = getattr(cloudknot.commands, k)
             cloudknot.commands = getmembers(module, isclass)
-            command = [
+            command = next(
                 command[1] for command in cloudknot.commands if command[0] != "Base"
-            ][0]
+            )
             command = command(options)
             command.run()
