@@ -67,7 +67,7 @@ def bucket_cleanup(aws_credentials):
     bucket_policy = s3_params.policy
 
     if (old_s3_params is None) or bucket_policy == old_s3_params.policy:
-        iam = ck.aws.clients["iam"]
+        iam = ck.aws.clients.iam
         paginator = iam.get_paginator("list_policies")
         response_iterator = paginator.paginate(Scope="Local", PathPrefix="/cloudknot/")
 
@@ -114,7 +114,7 @@ def bucket_cleanup(aws_credentials):
 @mock_all
 def cleanup_repos(bucket_cleanup):
     yield None
-    ecr = ck.aws.clients["ecr"]
+    ecr = ck.aws.clients.ecr
     config_file = ck.config.get_config_file()
     section_suffix = ck.get_profile() + " " + ck.get_region()
     repos_section_name = "docker-repos " + section_suffix
@@ -186,7 +186,7 @@ def test_knot(cleanup_repos):
     ck.refresh_clients()
 
     try:
-        ec2 = ck.aws.clients["ec2"]
+        ec2 = ck.aws.clients.ec2
         instance = ec2.run_instances(MaxCount=1, MinCount=1)["Instances"][0]
         ec2.create_image(
             BlockDeviceMappings=[
@@ -237,9 +237,9 @@ def test_knot(cleanup_repos):
 
         # Delete the stack using boto3 to check for an error from Pars
         # on reinstantiation
-        ck.aws.clients["cloudformation"].delete_stack(StackName=knot.stack_id)
+        ck.aws.clients.cloudformation.delete_stack(StackName=knot.stack_id)
 
-        waiter = ck.aws.clients["cloudformation"].get_waiter("stack_delete_complete")
+        waiter = ck.aws.clients.cloudformation.get_waiter("stack_delete_complete")
         waiter.wait(StackName=knot.stack_id, WaiterConfig={"Delay": 10})
 
         # Confirm error on retrieving the deleted stack
@@ -265,14 +265,14 @@ def test_knot(cleanup_repos):
         # Clobbering twice shouldn't be a problem
         knot.clobber()
 
-        response = ck.aws.clients["cloudformation"].describe_stacks(
+        response = ck.aws.clients.cloudformation.describe_stacks(
             StackName=knot.stack_id
         )
 
         status = response.get("Stacks")[0]["StackStatus"]
         assert status in ["DELETE_IN_PROGRESS", "DELETE_COMPLETE"]
 
-        waiter = ck.aws.clients["cloudformation"].get_waiter("stack_delete_complete")
+        waiter = ck.aws.clients.cloudformation.get_waiter("stack_delete_complete")
         waiter.wait(StackName=knot.stack_id, WaiterConfig={"Delay": 10})
 
         # Confirm that clobber deleted the stack from the config file

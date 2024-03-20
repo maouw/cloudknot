@@ -12,7 +12,7 @@ FROM ${BASE_IMAGE}
 
 # Install python dependencies
 RUN mkdir -p "$(dirname "${REQUIREMENTS_PATH}")"
-COPY requirements.txt ""${REQUIREMENTS_PATH}"
+COPY requirements.txt "${REQUIREMENTS_PATH}"
 RUN pip install --no-cache-dir ${PIP_ADD_OPTIONS} --requirement "${REQUIREMENTS_PATH}"
 
 # Create a default user. Available via runtime flag `--user ${username}`.

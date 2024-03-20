@@ -6,7 +6,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import tempfile
 from base64 import b64decode
 from string import Template
@@ -27,8 +26,9 @@ from .aws.base_classes import (
 )
 from .aws.ecr import DockerRepo
 from .config import get_config_file, rlock
+from .github_requirements import parse_github_requirement
 
-__all__ = ["DockerImage", "DEFAULT_PICKLE_PROTOCOL"]
+__all__ = ["DEFAULT_PICKLE_PROTOCOL", "DockerImage"]
 
 
 mod_logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ class DockerImage(aws.NamedObject):
                     "".format(t=type(name))
                 )
 
-            super(DockerImage, self).__init__(name=name)
+            super().__init__(name=name)
 
             section_name = "docker-image " + name
 
@@ -331,7 +331,7 @@ class DockerImage(aws.NamedObject):
                     )
 
                 self._script_path = os.path.abspath(script_path)
-                super(DockerImage, self).__init__(
+                super().__init__(
                     name=name
                     if name
                     else os.path.splitext(os.path.basename(self.script_path))[0]
@@ -351,9 +351,7 @@ class DockerImage(aws.NamedObject):
                 # We will create the script, Dockerfile, and requirements.txt
                 # in a new directory
                 self._clobber_script = True
-                super(DockerImage, self).__init__(
-                    name=name if name else func.__name__.replace("_", "-")
-                )
+                super().__init__(name=name if name else func.__name__.replace("_", "-"))
 
                 if dir_name:
                     self._build_path = os.path.abspath(dir_name)
@@ -415,22 +413,9 @@ class DockerImage(aws.NamedObject):
                     "github_installs must be a string or a sequence of strings."
                 )
 
-            pattern = r"(https|git)(://github.com/).*/.*\.git($|@.*$|#egg=.*$)"
-            for install in self._github_installs:
-                match_obj = re.match(pattern, install)
-                if match_obj is None:
-                    raise CloudknotInputError(
-                        "One of your github_installs, {i:s} is not formatted "
-                        "correctly. It should look something like "
-                        "git://github.com/user/repo.git, "
-                        "git://github.com/user/repo.git@branch, "
-                        "git://github.com/user/repo.git#egg=project[extra], "
-                        "https://github.com/user/repo.git, "
-                        "https://github.com/user/repo.git@branch, or"
-                        "https://github.com/user/repo.git#egg=project[extra]. "
-                        "See https://pip.pypa.io/en/stable/reference/pip_install/#git "
-                        "for more info."
-                    )
+            self._github_installs = [
+                parse_github_requirement(install) for install in github_installs
+            ]
 
             self._ignore_installed = ignore_installed
             self._pin_pip_versions = pin_pip_versions
@@ -438,8 +423,14 @@ class DockerImage(aws.NamedObject):
             # Set self.pip_imports and self.missing_imports
             self._set_imports()
 
+            all_reqs = [*self.pip_imports]
+            all_reqs += [
+                {"name": install.name, "version": None}
+                for install in self.github_installs
+            ]
+
             # Write the requirements.txt file and Dockerfile
-            pipreqs.generate_requirements_file(self.req_path, self.pip_imports, "==")
+            pipreqs.generate_requirements_file(self.req_path, all_reqs, "==")
 
             self._write_dockerfile()
 
@@ -686,11 +677,35 @@ class DockerImage(aws.NamedObject):
 
         # Use docker low-level APIClient
         c = docker.from_env()
+        # ARG BASE_IMAGE=python:3
+        # ARG PIP_ADD_OPTIONS=""
+        # ARG REQUIREMENTS_PATH=/tmp/requirements.txt
+        # ARG USERNAME=cloudknot-user
+        # ARG SCRIPT_BASE_NAME
+        #                 app_name=self.name,
+        #                 username=self.username,
+        #                 base_image=self.base_image,
+        #                 script_base_name=os.path.basename(self.script_path),
+        #                 github_installs_string=github_installs_string,
+
+        pip_add_options = []
+        if self.ignore_installed:
+            pip_add_options.append("--ignore-installed")
+
+        buildargs = {
+            "BASE_IMAGE": self.base_image,
+            "REQUIREMENTS_PATH": self.req_path,
+            "USERNAME": self.username,
+            "SCRIPT_BASE_NAME": os.path.basename(self.script_path),
+            "PIP_ADD_OPTIONS": " ".join(pip_add_options),
+        }
+
         for tag in tags:
             mod_logger.info(f"Building image {image_name} with tag {tag}")
             c.images.build(
                 path=self.build_path,
                 dockerfile=self.docker_path,
+                buildargs=buildargs,
                 tag=image_name + ":" + tag,
                 rm=True,
                 forcerm=True,
@@ -775,7 +790,7 @@ class DockerImage(aws.NamedObject):
 
         # Determine if we're running in moto for CI
         # by retrieving the account ID
-        user = aws.clients["iam"].get_user()["User"]
+        user = aws.clients.iam.get_user()["User"]
         account_id = user["Arn"].split(":")[4]
         if account_id == "123456789012":
             # Then we are mocking using moto. Use the ecr.put_image()
@@ -800,7 +815,7 @@ class DockerImage(aws.NamedObject):
                         name=im["name"], tag=im["tag"]
                     )
                 )
-                aws.clients["ecr"].put_image(
+                aws.clients.ecr.put_image(
                     registryId=self._repo_registry_id,
                     repositoryName=self._repo_name,
                     imageManifest=json.dumps(manifest),
@@ -811,7 +826,7 @@ class DockerImage(aws.NamedObject):
             # Refresh the aws ecr login credentials
             refresh_clients()
             try:
-                response = clients["ecr"].get_authorization_token()
+                response = clients.ecr.get_authorization_token()
             except botocore.exceptions.ClientError as e:
                 raise CloudknotConfigurationError(
                     "Could not get ECR authorization token to log in to the Docker registry"
@@ -916,7 +931,7 @@ class DockerImage(aws.NamedObject):
         if self.repo_uri:
             # Determine if we're running in moto for CI
             # by retrieving the account ID
-            user = aws.clients["iam"].get_user()["User"]
+            user = aws.clients.iam.get_user()["User"]
             account_id = user["Arn"].split(":")[4]
             if account_id != "123456789012":
                 # Then we're actually doing this thing. Use the Docker CLI

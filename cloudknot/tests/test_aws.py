@@ -108,7 +108,7 @@ def bucket_cleanup(aws_credentials):
     bucket_policy = s3_params.policy
 
     if (old_s3_params is None) or bucket_policy == old_s3_params.policy:
-        iam = ck.aws.clients["iam"]
+        iam = ck.aws.clients.iam
         paginator = iam.get_paginator("list_policies")
         response_iterator = paginator.paginate(Scope="Local", PathPrefix="/cloudknot/")
 
@@ -517,7 +517,7 @@ def test_set_profile(bucket_cleanup):
 @mock_all
 def test_DockerRepo(bucket_cleanup):
     ck.refresh_clients()
-    ecr = ck.aws.clients["ecr"]
+    ecr = ck.aws.clients.ecr
     config = configparser.ConfigParser()
     config_file = ck.config.get_config_file()
     repo_section_name = "docker-repos " + ck.get_profile() + " " + ck.get_region()

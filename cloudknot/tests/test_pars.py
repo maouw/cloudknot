@@ -46,7 +46,7 @@ def cleanup(aws_credentials):
     """Use this fixture to delete all unit testing resources
     regardless of of the failure or success of the test"""
     yield None
-    response = ck.aws.clients["cloudformation"].list_stacks(
+    response = ck.aws.clients.cloudformation.list_stacks(
         StackStatusFilter=[
             "CREATE_IN_PROGRESS",
             "CREATE_FAILED",
@@ -68,7 +68,7 @@ def cleanup(aws_credentials):
 
     stacks = response.get("StackSummaries")
     for stack in stacks:
-        ck.aws.clients["cloudformation"].delete_stack(StackName=stack["StackId"])
+        ck.aws.clients.cloudformation.delete_stack(StackName=stack["StackId"])
 
     # Clean up config file
     config_file = ck.config.get_config_file()
@@ -140,46 +140,46 @@ def test_pars_with_default_vpc(cleanup):
             spot_fleet_role_name=spot_fleet_role_name,
         )
 
-        response = ck.aws.clients["cloudformation"].describe_stacks(
+        response = ck.aws.clients.cloudformation.describe_stacks(
             StackName=name + "-pars"
         )
         stack_id = response.get("Stacks")[0]["StackId"]
         assert stack_id == p.stack_id
 
-        response = ck.aws.clients["iam"].get_role(RoleName=batch_service_role_name)
+        response = ck.aws.clients.iam.get_role(RoleName=batch_service_role_name)
         bsr_arn = response.get("Role")["Arn"]
         assert bsr_arn == p.batch_service_role
 
-        response = ck.aws.clients["iam"].get_role(RoleName=ecs_instance_role_name)
+        response = ck.aws.clients.iam.get_role(RoleName=ecs_instance_role_name)
         ecs_arn = response.get("Role")["Arn"]
         assert ecs_arn == p.ecs_instance_role
 
-        response = ck.aws.clients["iam"].get_role(RoleName=spot_fleet_role_name)
+        response = ck.aws.clients.iam.get_role(RoleName=spot_fleet_role_name)
         sfr_arn = response.get("Role")["Arn"]
         assert sfr_arn == p.spot_fleet_role
 
-        response = ck.aws.clients["iam"].list_instance_profiles_for_role(
+        response = ck.aws.clients.iam.list_instance_profiles_for_role(
             RoleName=ecs_instance_role_name
         )
         ecs_profile_arn = response.get("InstanceProfiles")[0]["Arn"]
         assert ecs_profile_arn == p.ecs_instance_profile
 
         # Check for a default VPC
-        response = ck.aws.clients["ec2"].describe_vpcs(
+        response = ck.aws.clients.ec2.describe_vpcs(
             Filters=[{"Name": "isDefault", "Values": ["true"]}]
         )
 
         vpc_id = response.get("Vpcs")[0]["VpcId"]
         assert vpc_id == p.vpc
 
-        response = ck.aws.clients["ec2"].describe_subnets(
+        response = ck.aws.clients.ec2.describe_subnets(
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
         )
 
         subnet_ids = [d["SubnetId"] for d in response.get("Subnets")]
         assert set(subnet_ids) == set(p.subnets)
 
-        response = ck.aws.clients["ec2"].describe_security_groups(
+        response = ck.aws.clients.ec2.describe_security_groups(
             Filters=[
                 {"Name": "vpc-id", "Values": [vpc_id]},
                 {"Name": "tag-key", "Values": ["Name"]},
@@ -192,9 +192,9 @@ def test_pars_with_default_vpc(cleanup):
 
         # Delete the stack using boto3 to check for an error from Pars
         # on reinstantiation
-        ck.aws.clients["cloudformation"].delete_stack(StackName=p.stack_id)
+        ck.aws.clients.cloudformation.delete_stack(StackName=p.stack_id)
 
-        waiter = ck.aws.clients["cloudformation"].get_waiter("stack_delete_complete")
+        waiter = ck.aws.clients.cloudformation.get_waiter("stack_delete_complete")
         waiter.wait(StackName=p.stack_id, WaiterConfig={"Delay": 10})
 
         # Confirm error on retrieving the deleted stack
@@ -223,35 +223,33 @@ def test_pars_with_new_vpc(cleanup):
 
     p = ck.Pars(name=name, use_default_vpc=False)
 
-    response = ck.aws.clients["cloudformation"].describe_stacks(
-        StackName=name + "-pars"
-    )
+    response = ck.aws.clients.cloudformation.describe_stacks(StackName=name + "-pars")
 
     stack_id = response.get("Stacks")[0]["StackId"]
     assert stack_id == p.stack_id
 
-    response = ck.aws.clients["iam"].list_roles()
+    response = ck.aws.clients.iam.list_roles()
 
-    response = ck.aws.clients["iam"].get_role(RoleName=name + "-batch-service-role")
+    response = ck.aws.clients.iam.get_role(RoleName=name + "-batch-service-role")
     bsr_arn = response.get("Role")["Arn"]
     assert bsr_arn == p.batch_service_role
 
-    response = ck.aws.clients["iam"].get_role(RoleName=name + "-ecs-instance-role")
+    response = ck.aws.clients.iam.get_role(RoleName=name + "-ecs-instance-role")
     ecs_arn = response.get("Role")["Arn"]
     assert ecs_arn == p.ecs_instance_role
 
-    response = ck.aws.clients["iam"].get_role(RoleName=name + "-spot-fleet-role")
+    response = ck.aws.clients.iam.get_role(RoleName=name + "-spot-fleet-role")
     sfr_arn = response.get("Role")["Arn"]
     assert sfr_arn == p.spot_fleet_role
 
-    response = ck.aws.clients["iam"].list_instance_profiles_for_role(
+    response = ck.aws.clients.iam.list_instance_profiles_for_role(
         RoleName=name + "-ecs-instance-role"
     )
     ecs_profile_arn = response.get("InstanceProfiles")[0]["Arn"]
     assert ecs_profile_arn == p.ecs_instance_profile
 
     # Check for a VPC with the tag "Name: name"
-    response = ck.aws.clients["ec2"].describe_tags(
+    response = ck.aws.clients.ec2.describe_tags(
         Filters=[
             {"Name": "resource-type", "Values": ["vpc"]},
             {"Name": "key", "Values": ["Name"]},
@@ -262,14 +260,14 @@ def test_pars_with_new_vpc(cleanup):
     vpc_id = response.get("Tags")[0]["ResourceId"]
     assert vpc_id == p.vpc
 
-    response = ck.aws.clients["ec2"].describe_subnets(
+    response = ck.aws.clients.ec2.describe_subnets(
         Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
     )
 
     subnet_ids = [d["SubnetId"] for d in response.get("Subnets")]
     assert set(subnet_ids) == set(p.subnets)
 
-    response = ck.aws.clients["ec2"].describe_security_groups(
+    response = ck.aws.clients.ec2.describe_security_groups(
         Filters=[
             {"Name": "vpc-id", "Values": [vpc_id]},
             {"Name": "tag-key", "Values": ["Name"]},
@@ -301,12 +299,12 @@ def test_pars_with_new_vpc(cleanup):
     # Clobbering twice shouldn't be a problem
     p.clobber()
 
-    response = ck.aws.clients["cloudformation"].describe_stacks(StackName=stack_id)
+    response = ck.aws.clients.cloudformation.describe_stacks(StackName=stack_id)
 
     status = response.get("Stacks")[0]["StackStatus"]
     assert status in ["DELETE_IN_PROGRESS", "DELETE_COMPLETE"]
 
-    waiter = ck.aws.clients["cloudformation"].get_waiter("stack_delete_complete")
+    waiter = ck.aws.clients.cloudformation.get_waiter("stack_delete_complete")
     waiter.wait(StackName=stack_id, WaiterConfig={"Delay": 10})
 
     # Confirm that clobber deleted the stack from the config file
@@ -326,11 +324,11 @@ def test_pars_with_new_vpc(cleanup):
         instance_tenancy=instance_tenancy,
     )
 
-    response = ck.aws.clients["ec2"].describe_vpcs(VpcIds=[p.vpc])
+    response = ck.aws.clients.ec2.describe_vpcs(VpcIds=[p.vpc])
     assert instance_tenancy == response.get("Vpcs")[0]["InstanceTenancy"]
     assert cidr == response.get("Vpcs")[0]["CidrBlock"]
 
-    ck.aws.clients["cloudformation"].delete_stack(StackName=p.stack_id)
+    ck.aws.clients.cloudformation.delete_stack(StackName=p.stack_id)
 
     # Change the stack-id in the config file to get an error
     config_file = ck.config.get_config_file()

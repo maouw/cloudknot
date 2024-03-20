@@ -16,33 +16,34 @@ except ImportError:
 import contextlib
 
 from ..config import get_config_file, rlock
+from .clients import CloudknotClients
 
 __all__ = [
-    "clients",
-    "get_tags",
-    "get_ecr_repo",
-    "set_ecr_repo",
-    "get_s3_params",
-    "set_s3_params",
-    "get_region",
-    "set_region",
-    "list_profiles",
-    "get_user",
-    "get_profile",
-    "set_profile",
-    "refresh_clients",
-    "ResourceExistsException",
-    "ResourceDoesNotExistException",
-    "ResourceClobberedException",
-    "CannotDeleteResourceException",
-    "CannotCreateResourceException",
-    "RegionException",
-    "ProfileException",
-    "CKTimeoutError",
     "BatchJobFailedError",
+    "CKTimeoutError",
+    "CannotCreateResourceException",
+    "CannotDeleteResourceException",
     "CloudknotConfigurationError",
     "CloudknotInputError",
     "NamedObject",
+    "ProfileException",
+    "RegionException",
+    "ResourceClobberedException",
+    "ResourceDoesNotExistException",
+    "ResourceExistsException",
+    "clients",
+    "get_ecr_repo",
+    "get_profile",
+    "get_region",
+    "get_s3_params",
+    "get_tags",
+    "get_user",
+    "list_profiles",
+    "refresh_clients",
+    "set_ecr_repo",
+    "set_profile",
+    "set_region",
+    "set_s3_params",
 ]
 mod_logger = logging.getLogger(__name__)
 
@@ -152,21 +153,21 @@ def set_ecr_repo(repo):
         repo_arn = "test"
         try:
             # If repo exists, retrieve its info
-            response = clients["ecr"].describe_repositories(repositoryNames=[repo])
+            response = clients.ecr.describe_repositories(repositoryNames=[repo])
             repo_arn = response["repositories"][0]["repositoryArn"]
-        except clients["ecr"].exceptions.RepositoryNotFoundException:
+        except clients.ecr.exceptions.RepositoryNotFoundException:
             # If it doesn't exists already, then create it
-            response = clients["ecr"].create_repository(repositoryName=repo)
+            response = clients.ecr.create_repository(repositoryName=repo)
             repo_arn = response["repository"]["repositoryArn"]
         except botocore.exceptions.ClientError as e:
             error_code = e.response["Error"]["Code"]
             if error_code == "RepositoryNotFoundException":
                 # If it doesn't exist already, then create it
-                response = clients["ecr"].create_repository(repositoryName=repo)
+                response = clients.ecr.create_repository(repositoryName=repo)
                 repo_arn = response["repository"]["repositoryArn"]
 
         try:
-            clients["ecr"].tag_resource(
+            clients.ecr.tag_resource(
                 resourceArn=repo_arn,
                 tags=get_tags(
                     name=repo, additional_tags={"Project": "Cloudknot global config"}
@@ -260,7 +261,7 @@ def get_s3_params():
             policy = config.get("aws", "s3-bucket-policy")
 
     # Get all local policies with cloudknot prefix
-    paginator = clients["iam"].get_paginator("list_policies")
+    paginator = clients.iam.get_paginator("list_policies")
     response_iterator = paginator.paginate(Scope="Local", PathPrefix="/cloudknot/")
 
     # response_iterator is a list of dicts. First convert to list of lists
@@ -306,14 +307,14 @@ def set_s3_params(bucket, policy=None, sse=None):
         key = "cloudnot-test-permissions-key"  # FIXME: Typo in word 'cloudnot'
         try:
             if sse_:
-                clients["s3"].put_object(
+                clients.s3.put_object(
                     Bucket=bucket_, Body=b"test", Key=key, ServerSideEncryption=sse_
                 )
             else:
-                clients["s3"].put_object(Bucket=bucket_, Body=b"test", Key=key)
+                clients.s3.put_object(Bucket=bucket_, Body=b"test", Key=key)
 
-            clients["s3"].get_object(Bucket=bucket_, Key=key)
-        except clients["s3"].exceptions.ClientError:
+            clients.s3.get_object(Bucket=bucket_, Key=key)
+        except clients.s3.exceptions.ClientError:
             raise CloudknotInputError(
                 "The requested bucket name already "
                 "exists and you do not have permission "
@@ -321,7 +322,7 @@ def set_s3_params(bucket, policy=None, sse=None):
             )
 
         with contextlib.suppress(Exception):
-            clients["s3"].delete_object(Bucket=bucket_, Key=key)
+            clients.s3.delete_object(Bucket=bucket_, Key=key)
 
     with rlock:
         config.read(config_file)
@@ -334,43 +335,43 @@ def set_s3_params(bucket, policy=None, sse=None):
         # Create the bucket
         try:
             if get_region() == "us-east-1":
-                clients["s3"].create_bucket(Bucket=bucket)
+                clients.s3.create_bucket(Bucket=bucket)
             else:
-                clients["s3"].create_bucket(
+                clients.s3.create_bucket(
                     Bucket=bucket,
                     CreateBucketConfiguration={"LocationConstraint": get_region()},
                 )
-        except clients["s3"].exceptions.BucketAlreadyOwnedByYou:
+        except clients.s3.exceptions.BucketAlreadyOwnedByYou:
             pass
-        except clients["s3"].exceptions.BucketAlreadyExists:
+        except clients.s3.exceptions.BucketAlreadyExists:
             test_bucket_put_get(bucket, sse)
-        except clients["s3"].exceptions.ClientError as e:
+        except clients.s3.exceptions.ClientError as e:
             # Check for Illegal Location Constraint
             error_code = e.response["Error"]["Code"]
             if error_code in {
                 "IllegalLocationConstraintException",
                 "InvalidLocationConstraint",
             }:
-                response = clients["s3"].get_bucket_location(Bucket=bucket)
+                response = clients.s3.get_bucket_location(Bucket=bucket)
                 location = response.get("LocationConstraint")
                 try:
                     if location == "us-east-1" or location is None:
-                        clients["s3"].create_bucket(Bucket=bucket)
+                        clients.s3.create_bucket(Bucket=bucket)
                     else:
-                        clients["s3"].create_bucket(
+                        clients.s3.create_bucket(
                             Bucket=bucket,
                             CreateBucketConfiguration={"LocationConstraint": location},
                         )
-                except clients["s3"].exceptions.BucketAlreadyOwnedByYou:
+                except clients.s3.exceptions.BucketAlreadyOwnedByYou:
                     pass
-                except clients["s3"].exceptions.BucketAlreadyExists:
+                except clients.s3.exceptions.BucketAlreadyExists:
                     test_bucket_put_get(bucket, sse)
             else:
                 # Pass exception to user
                 raise e
 
         # Add the cloudknot tags to the bucket
-        clients["s3"].put_bucket_tagging(
+        clients.s3.put_bucket_tagging(
             Bucket=bucket,
             Tagging={
                 "TagSet": get_tags(
@@ -386,13 +387,13 @@ def set_s3_params(bucket, policy=None, sse=None):
             # Create the policy
             s3_policy_doc = bucket_policy_document(bucket)
 
-            clients["iam"].create_policy(
+            clients.iam.create_policy(
                 PolicyName=policy,
                 Path="/cloudknot/",
                 PolicyDocument=json.dumps(s3_policy_doc),
                 Description="Grants access to S3 bucket {0:s}".format(bucket),
             )
-        except clients["iam"].exceptions.EntityAlreadyExistsException:
+        except clients.iam.exceptions.EntityAlreadyExistsException:
             # Policy already exists, do nothing
             pass
 
@@ -447,7 +448,7 @@ def update_s3_policy(policy, bucket):
     s3_policy_doc = bucket_policy_document(bucket)
 
     # Get all local policies with cloudknot prefix
-    paginator = clients["iam"].get_paginator("list_policies")
+    paginator = clients.iam.get_paginator("list_policies")
     response_iterator = paginator.paginate(Scope="Local", PathPrefix="/cloudknot/")
 
     # response_iterator is a list of dicts. First convert to list of lists
@@ -462,14 +463,14 @@ def update_s3_policy(policy, bucket):
     with rlock:
         try:
             # Update the policy
-            clients["iam"].create_policy_version(
+            clients.iam.create_policy_version(
                 PolicyArn=arn,
                 PolicyDocument=json.dumps(s3_policy_doc),
                 SetAsDefault=True,
             )
-        except clients["iam"].exceptions.LimitExceededException:
+        except clients.iam.exceptions.LimitExceededException:
             # Too many policy versions. List policy versions and delete oldest
-            paginator = clients["iam"].get_paginator("list_policy_versions")
+            paginator = clients.iam.get_paginator("list_policy_versions")
             response_iterator = paginator.paginate(PolicyArn=arn)
 
             # Get non-default versions
@@ -481,12 +482,12 @@ def update_s3_policy(policy, bucket):
 
             # Get the oldest version and delete it
             oldest = sorted(versions, key=lambda ver: ver["CreateDate"])[0]
-            clients["iam"].delete_policy_version(
+            clients.iam.delete_policy_version(
                 PolicyArn=arn, VersionId=oldest["VersionId"]
             )
 
             # Update the policy not that there's room for another version
-            clients["iam"].create_policy_version(
+            clients.iam.create_policy_version(
                 PolicyArn=arn,
                 PolicyDocument=json.dumps(s3_policy_doc),
                 SetAsDefault=True,
@@ -561,7 +562,7 @@ def set_region(region="us-east-1"):
         An AWS region.
         Default: 'us-east-1'
     """
-    response = clients["ec2"].describe_regions()
+    response = clients.ec2.describe_regions()
     region_names = [d["RegionName"] for d in response.get("Regions")]
 
     if region not in region_names:
@@ -584,14 +585,14 @@ def set_region(region="us-east-1"):
 
         # Update the boto3 clients so that the region change is reflected
         # throughout the package
-        max_pool = clients["iam"].meta.config.max_pool_connections
+        max_pool = clients.iam.meta.config.max_pool_connections
         boto_config = botocore.config.Config(max_pool_connections=max_pool)
         profile_name = get_profile(fallback=None)
         session = boto3.Session(
             profile_name=profile_name if profile_name != "from-env" else None
         )
         for k in client_names:
-            clients[k] = session.client(k, region_name=region, config=boto_config)
+            _clients[k] = session.client(k, region_name=region, config=boto_config)
 
     mod_logger.debug("Set region to {region:s}".format(region=region))
 
@@ -655,7 +656,7 @@ def list_profiles():
 
 def get_user():
     """Get the current AWS username."""
-    user_info = clients["iam"].get_user().get("User")
+    user_info = clients.iam.get_user().get("User")
     return user_info.get("UserName", user_info.get("Arn").split(":")[-1])
 
 
@@ -745,13 +746,15 @@ def set_profile(profile_name):
 
         # Update the boto3 clients so that the profile change is reflected
         # throughout the package
-        max_pool = clients["iam"].meta.config.max_pool_connections
+        max_pool = clients.iam.meta.config.max_pool_connections
         boto_config = botocore.config.Config(max_pool_connections=max_pool)
         session = boto3.Session(
             profile_name=profile_name if profile_name != "from-env" else None
         )
         for k in client_names:
-            clients[k] = session.client(k, region_name=get_region(), config=boto_config)
+            _clients[k] = session.client(
+                k, region_name=get_region(), config=boto_config
+            )
 
     mod_logger.debug("Set profile to {profile:s}".format(profile=profile_name))
 
@@ -765,12 +768,15 @@ Advanced users: if you want to use cloudknot and boto3 at the same time,
 you should use these clients to ensure that you have the right profile
 and region.
 """
-clients = {
+_clients = {
     k: boto3.Session(profile_name=get_profile(fallback=None)).client(
         k, region_name=get_region()
     )
     for k in client_names
 }
+
+
+clients = CloudknotClients(_clients)
 
 
 def refresh_clients(max_pool=10):
@@ -779,7 +785,7 @@ def refresh_clients(max_pool=10):
         config = botocore.config.Config(max_pool_connections=max_pool)
         session = boto3.Session(profile_name=get_profile(fallback=None))
         for k in client_names:
-            clients[k] = session.client(k, region_name=get_region(), config=config)
+            _clients[k] = session.client(k, region_name=get_region(), config=config)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -797,7 +803,7 @@ class ResourceExistsException(Exception):
         resource_id : string
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
-        super(ResourceExistsException, self).__init__(message)
+        super().__init__(message)
         self.resource_id = resource_id
 
 
@@ -816,7 +822,7 @@ class ResourceDoesNotExistException(Exception):
         resource_id : string
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
-        super(ResourceDoesNotExistException, self).__init__(message)
+        super().__init__(message)
         self.resource_id = resource_id
 
 
@@ -835,7 +841,7 @@ class ResourceClobberedException(Exception):
         resource_id : string
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
-        super(ResourceClobberedException, self).__init__(message)
+        super().__init__(message)
         self.resource_id = resource_id
 
 
@@ -854,7 +860,7 @@ class CannotDeleteResourceException(Exception):
         resource_id : string
             The resource ID (e.g. ARN, VPC-ID) of the dependent resources
         """
-        super(CannotDeleteResourceException, self).__init__(message)
+        super().__init__(message)
         self.resource_id = resource_id
 
 
@@ -870,7 +876,7 @@ class CannotCreateResourceException(Exception):
         message : string
             The error message to display to the user
         """
-        super(CannotCreateResourceException, self).__init__(message)
+        super().__init__(message)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -885,7 +891,7 @@ class RegionException(Exception):
         resource_region : string
             The resource region
         """
-        super(RegionException, self).__init__(
+        super().__init__(
             "This resource's region ({resource:s}) does not match the "
             "current region ({current:s})".format(
                 resource=resource_region, current=get_region()
@@ -907,7 +913,7 @@ class ProfileException(Exception):
         resource_profile : string
             The resource profile
         """
-        super(ProfileException, self).__init__(
+        super().__init__(
             "This resource's profile ({resource:s}) does not match the "
             "current profile ({current:s})".format(
                 resource=resource_profile, current=get_profile()
@@ -927,7 +933,7 @@ class CKTimeoutError(Exception):
 
     def __init__(self, job_id):
         """Initialize the Exception."""
-        super(CKTimeoutError, self).__init__(
+        super().__init__(
             "The job with job-id {jid:s} did not finish within the "
             "requested timeout period".format(jid=job_id)
         )
@@ -946,9 +952,7 @@ class BatchJobFailedError(Exception):
         job_id : string
             The AWS jobId of the failed job
         """
-        super(BatchJobFailedError, self).__init__(
-            "AWS Batch job {job_id:s} has failed.".format(job_id=job_id)
-        )
+        super().__init__("AWS Batch job {job_id:s} has failed.".format(job_id=job_id))
         self.job_id = job_id
 
 
@@ -964,7 +968,7 @@ class CloudknotConfigurationError(Exception):
         config_file : string
             The path to the cloudknot config file
         """
-        super(CloudknotConfigurationError, self).__init__(
+        super().__init__(
             "It looks like you haven't run `cloudknot configure` to set up "
             "your cloudknot environment. Or perhaps you did that but you have "
             "since deleted your cloudknot configuration file. Please run "
@@ -985,7 +989,7 @@ class CloudknotInputError(Exception):
         msg : string
             The error message
         """
-        super(CloudknotInputError, self).__init__(msg)
+        super().__init__(msg)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit

@@ -8,12 +8,17 @@ from collections import namedtuple
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+# from typing import Literal
+from typing import Callable, Optional
+
 import botocore
+import botocore.exceptions
 
-from . import aws, dockerimage
+from . import aws
 from .config import get_config_file, is_valid_stack, rlock
+from .dockerimage import DockerImage
 
-__all__ = ["Pars", "Knot"]
+__all__ = ["Knot", "Pars"]
 
 
 mod_logger = logging.getLogger(__name__)
@@ -24,15 +29,13 @@ def _stack_out(key, outputs):
     return o["OutputValue"]
 
 
-def _ec2_instance_types():
+def _ec2_instance_types() -> set[str]:
     """Yield all available EC2 instance types."""
-    paginator = aws.clients["ec2"].get_paginator("describe_instance_types")
-    response_iterator = paginator.paginate()
-    responses = [
-        lst for sublist in response_iterator for lst in sublist["InstanceTypes"]
-    ]
-    instance_types = [inst["InstanceType"] for inst in responses]
-    return set(instance_types)
+    paginator = aws.clients.ec2.get_paginator("describe_instance_types")
+    responses = (
+        lst for sublist in paginator.paginate() for lst in sublist["InstanceTypes"]
+    )
+    return {inst["InstanceType"] for inst in responses}
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -48,15 +51,15 @@ class Pars(aws.NamedObject):
 
     def __init__(
         self,
-        name=None,
-        batch_service_role_name=None,
-        ecs_instance_role_name=None,
-        spot_fleet_role_name=None,
-        policies=(),
-        use_default_vpc=True,
-        ipv4_cidr=None,
-        instance_tenancy=None,
-        aws_resource_tags=None,
+        name: Optional[str] = None,
+        batch_service_role_name: Optional[str] = None,
+        ecs_instance_role_name: Optional[str] = None,
+        spot_fleet_role_name: Optional[str] = None,
+        policies: tuple[str] = (),
+        use_default_vpc: bool = True,
+        ipv4_cidr: Optional[str] = None,
+        instance_tenancy: str = "default",  # Literal["default", "dedicated"] = "default",
+        aws_resource_tags: dict | list[dict] | None = None,
     ):
         """Initialize a PARS instance.
 
@@ -104,18 +107,16 @@ class Pars(aws.NamedObject):
             Additional AWS resource tags to apply to this repository
         """
         # Validate name input
-        if name is not None and not isinstance(name, str):
-            raise aws.CloudknotInputError(
-                "PARS name must be a string. You passed a {t!s}".format(t=type(name))
-            )
-
-        if name is None:
-            name = aws.get_user() + "-default"
-
-        if len(name) > 45:
-            raise aws.CloudknotInputError("Pars name must be less than 46 characters.")
-
-        super(Pars, self).__init__(name=name)
+        match name := f"{aws.get_user()}-default" if name is None else name:
+            case str():
+                if len(name) > 45:
+                    raise ValueError(
+                        f"Pars {name=} must be less than 46 characters long {len(name)=}"
+                    )
+            case _:
+                raise ValueError(
+                    f"Pars must be a string or None but got a '{type(name).__name__}'"
+                )
 
         # Validate aws_resource_tags input before creating any resources
         self._tags = aws.get_tags(name=name, additional_tags=aws_resource_tags)
@@ -151,7 +152,7 @@ class Pars(aws.NamedObject):
                     self._stack_id,
                 )
 
-            response = aws.clients["cloudformation"].describe_stacks(
+            response = aws.clients.cloudformation.describe_stacks(
                 StackName=self._stack_id
             )
             outs = response.get("Stacks")[0]["Outputs"]
@@ -164,12 +165,10 @@ class Pars(aws.NamedObject):
             self._subnets = _stack_out("SubnetIds", outs).split(",")
             self._security_group = _stack_out("SecurityGroupId", outs)
 
-            vpc_response = aws.clients["ec2"].describe_vpcs(VpcIds=[self._vpc])["Vpcs"][
-                0
-            ]
+            vpc_response = aws.clients.ec2.describe_vpcs(VpcIds=[self._vpc])["Vpcs"][0]
             stack_instance_tenancy = vpc_response["InstanceTenancy"]
             stack_ipv4_cidr = vpc_response["CidrBlock"]
-            ecs_response = aws.clients["iam"].list_attached_role_policies(
+            ecs_response = aws.clients.iam.list_attached_role_policies(
                 RoleName=self._ecs_instance_role.split("/")[-1]
             )
             stack_policies = {d["PolicyName"] for d in ecs_response["AttachedPolicies"]}
@@ -236,16 +235,14 @@ class Pars(aws.NamedObject):
                 )
         else:
             # Pars doesn't exist, use input to create resources
-            def validated_name(role_name, fallback_suffix):
-                # Validate role name input
-                if role_name:
-                    if not isinstance(role_name, str):
-                        raise aws.CloudknotInputError(
-                            "if provided, role names must be strings."
-                        )
-                else:
-                    role_name = name + "-" + fallback_suffix
 
+            def validated_name(role_name, fallback_suffix):
+                if not isinstance(
+                    role_name := f"{name}-{fallback_suffix}" or role_name, str
+                ):
+                    raise aws.CloudknotInputError(
+                        "If provided, role names must be strings (got a {type(role_name).__name__}) with {fallback_suffix=}."
+                    )
                 return role_name
 
             batch_service_role_name = validated_name(
@@ -259,42 +256,38 @@ class Pars(aws.NamedObject):
             )
 
             # Check the user supplied policies. Remove redundant entries
-            if isinstance(policies, str):
-                input_policies = {policies}
-            else:
-                try:
-                    if all(isinstance(x, str) for x in policies):
-                        input_policies = set(policies)
-                    else:
-                        raise aws.CloudknotInputError(
-                            "policies must be a string or a sequence of strings."
-                        )
-                except TypeError:
-                    raise aws.CloudknotInputError(
-                        "policies must be a string or a sequence of strings"
-                    )
 
-            # Validate policies against the available policies
+            try:
+                input_policies = (
+                    {policies} if isinstance(policies, str) else set(policies)
+                )
+                assert all(isinstance(p, str) for p in input_policies)
+            except (TypeError, AssertionError) as e:
+                raise aws.CloudknotInputError(
+                    "Policies must be a string or a sequence of strings."
+                ) from None
+
+                # Validate policies against the available policies
             policy_arns = []
             policy_names = []
             for policy in input_policies:
                 try:
-                    aws.clients["iam"].get_policy(PolicyArn=policy)
+                    aws.clients.iam.get_policy(PolicyArn=policy)
                     policy_arns.append(policy)
                 except (
-                    aws.clients["iam"].exceptions.InvalidInputException,
-                    aws.clients["iam"].exceptions.NoSuchEntityException,
+                    aws.clients.iam.exceptions.InvalidInputException,
+                    aws.clients.iam.exceptions.NoSuchEntityException,
                     botocore.exceptions.ParamValidationError,
                 ):
                     policy_names.append(policy)
 
             if policy_names:
                 # Get all AWS policies
-                paginator = aws.clients["iam"].get_paginator("list_policies")
+                paginator = aws.clients.iam.get_paginator("list_policies")
                 response_iterator = paginator.paginate()
 
                 # response_iterator is a list of dicts. First convert to list of lists
-                # and the flatten to a single list
+                # and then flatten to a single list
                 response_policies = [
                     response["Policies"] for response in response_iterator
                 ]
@@ -305,13 +298,11 @@ class Pars(aws.NamedObject):
                 aws_policies = {d["PolicyName"]: d["Arn"] for d in policies_list}
 
                 # If input policies are not subset of aws_policies, throw error
-                if not (set(policy_names) < set(aws_policies.keys())):
-                    bad_policies = set(policy_names) - set(aws_policies.keys())
-                    raise aws.CloudknotInputError(
-                        "Could not find the policies {bad_policies!s} on "
-                        "AWS.".format(bad_policies=bad_policies)
-                    )
 
+                if bad_policies := set(policy_names) - set(aws_policies.keys()):
+                    raise aws.CloudknotInputError(
+                        f"Could not find the policies {bad_policies} on AWS."
+                    )
                 policy_arns += [aws_policies[policy] for policy in policy_names]
 
             s3_params = aws.get_s3_params()
@@ -327,14 +318,14 @@ class Pars(aws.NamedObject):
 
                 # Retrieve the default VPC ID
                 try:
-                    response = aws.clients["ec2"].create_default_vpc()
+                    response = aws.clients.ec2.create_default_vpc()
                     vpc_id = response.get("Vpc").get("VpcId")
-                except aws.clients["ec2"].exceptions.ClientError as e:
+                except aws.clients.ec2.exceptions.ClientError as e:
                     error_code = e.response.get("Error").get("Code")
                     match error_code:
                         case "DefaultVpcAlreadyExists":
                             # Then use first default VPC
-                            response = aws.clients["ec2"].describe_vpcs(
+                            response = aws.clients.ec2.describe_vpcs(
                                 Filters=[{"Name": "isDefault", "Values": ["true"]}]
                             )
                             vpc_id = response.get("Vpcs")[0].get("VpcId")
@@ -355,7 +346,7 @@ class Pars(aws.NamedObject):
                             raise e
 
                 # Retrieve the subnets for the default VPC
-                paginator = aws.clients["ec2"].get_paginator("describe_subnets")
+                paginator = aws.clients.ec2.get_paginator("describe_subnets")
                 response_iterator = paginator.paginate(
                     Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
                 )
@@ -369,7 +360,7 @@ class Pars(aws.NamedObject):
                 subnet_ids = [d["SubnetId"] for d in subnets_list]
                 subnet_zones = [d["AvailabilityZone"] for d in subnets_list]
 
-                response = aws.clients["ec2"].describe_availability_zones()
+                response = aws.clients.ec2.describe_availability_zones()
                 zones = [
                     d["ZoneName"]
                     for d in response.get("AvailabilityZones")
@@ -381,7 +372,7 @@ class Pars(aws.NamedObject):
                 # the subnet list
                 if set(subnet_zones) < set(zones):
                     for z in set(zones) - set(subnet_zones):
-                        aws.clients["ec2"].create_default_subnet(AvailabilityZone=z)
+                        aws.clients.ec2.create_default_subnet(AvailabilityZone=z)
 
                     response_iterator = paginator.paginate(
                         Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
@@ -408,7 +399,7 @@ class Pars(aws.NamedObject):
                 with open(template_path, "r") as fp:
                     template_body = fp.read()
 
-                response = aws.clients["cloudformation"].create_stack(
+                response = aws.clients.cloudformation.create_stack(
                     StackName=self.name + "-pars",
                     TemplateBody=template_body,
                     Parameters=[
@@ -437,12 +428,10 @@ class Pars(aws.NamedObject):
 
                 self._stack_id = response["StackId"]
 
-                waiter = aws.clients["cloudformation"].get_waiter(
-                    "stack_create_complete"
-                )
+                waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
                 waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
 
-                response = aws.clients["cloudformation"].describe_stacks(
+                response = aws.clients.cloudformation.describe_stacks(
                     StackName=self._stack_id
                 )
 
@@ -456,24 +445,23 @@ class Pars(aws.NamedObject):
                 self._subnets = _stack_out("SubnetIds", outs).split(",")
                 self._security_group = _stack_out("SecurityGroupId", outs)
             else:
-                # Check that ipv4 is a valid network range or set default value
-                if ipv4_cidr:
-                    try:
-                        ipv4_cidr = str(ipaddress.IPv4Network(str(ipv4_cidr)))
-                    except (ipaddress.AddressValueError, ValueError):
-                        raise aws.CloudknotInputError(
-                            "If provided, ipv4_cidr must be a valid IPv4 "
-                            "network range."
-                        )
-                else:
-                    ipv4_cidr = str(ipaddress.IPv4Network("172.31.0.0/16"))
+                try:
+                    ipv4_cidr = str(
+                        ipaddress.IPv4Network(str(ipv4_cidr or "172.31.0.0/16"))
+                    )
+                except (ipaddress.AddressValueError, ValueError):
+                    raise aws.CloudknotInputError(
+                        "If provided, {ipv4_cidr=} must be a valid IPv4 network range."
+                    )
 
                 # Validate instance_tenancy input
-                instance_tenancy = instance_tenancy or "default"
-                if instance_tenancy not in {"default", "dedicated"}:
+                if instance_tenancy := instance_tenancy or "default" not in {
+                    "default",
+                    "dedicated",
+                }:
                     raise aws.CloudknotInputError(
                         "If provided, instance tenancy must be "
-                        'one of ("default", "dedicated").'
+                        'one of {"default", "dedicated"}.'
                     )
 
                 # Get subnet CIDR blocks
@@ -481,17 +469,13 @@ class Pars(aws.NamedObject):
                 cidr = ipaddress.IPv4Network(str(ipv4_cidr))
 
                 # Get list of subnet CIDR blocks
-                subnet_ipv4_cidrs = list(cidr.subnets(new_prefix=20))
-
-                if len(subnet_ipv4_cidrs) < 2:  # pragma: nocover
+                if len(subnet_ipv4_cidrs := list(cidr.subnets(new_prefix=20))[:2]) < 2:
                     raise aws.CloudknotInputError(
                         "If provided, ipv4_cidr must be large enough to "
                         "accomodate two subnets. If you don't know what this "
                         "means, try the default value or specify "
                         "`use_default_vpc=True`."
                     )
-
-                subnet_ipv4_cidrs = subnet_ipv4_cidrs[:2]
 
                 template_path = os.path.abspath(
                     os.path.join(
@@ -504,7 +488,7 @@ class Pars(aws.NamedObject):
                 with open(template_path, "r") as fp:
                     template_body = fp.read()
 
-                response = aws.clients["cloudformation"].create_stack(
+                response = aws.clients.cloudformation.create_stack(
                     StackName=self.name + "-pars",
                     TemplateBody=template_body,
                     Parameters=[
@@ -541,12 +525,10 @@ class Pars(aws.NamedObject):
 
                 self._stack_id = response["StackId"]
 
-                waiter = aws.clients["cloudformation"].get_waiter(
-                    "stack_create_complete"
-                )
+                waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
                 waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
 
-                response = aws.clients["cloudformation"].describe_stacks(
+                response = aws.clients.cloudformation.describe_stacks(
                     StackName=self._stack_id
                 )
 
@@ -643,7 +625,7 @@ class Pars(aws.NamedObject):
 
         self.check_profile_and_region()
 
-        aws.clients["cloudformation"].delete_stack(StackName=self._stack_id)
+        aws.clients.cloudformation.delete_stack(StackName=self._stack_id)
 
         # Remove this section from the config file
         config = configparser.ConfigParser()
@@ -676,36 +658,36 @@ class Knot(aws.NamedObject):
 
     def __init__(
         self,
-        name=None,
-        pars=None,
-        pars_policies=(),
-        docker_image=None,
-        base_image=None,
-        func=None,
-        image_script_path=None,
-        image_work_dir=None,
-        image_github_installs=(),
-        username=None,
-        repo_name=None,
-        image_tags=None,
-        no_image_cache=False,
-        job_definition_name=None,
-        job_def_vcpus=None,
-        memory=None,
-        n_gpus=None,
-        retries=None,
-        compute_environment_name=None,
-        instance_types=None,
-        min_vcpus=None,
-        max_vcpus=None,
-        desired_vcpus=None,
-        volume_size=None,
-        image_id=None,
-        ec2_key_pair=None,
-        bid_percentage=None,
-        job_queue_name=None,
-        priority=None,
-        aws_resource_tags=None,
+        name: Optional[str] = None,
+        pars: Optional[Pars] = None,
+        pars_policies: tuple[str] = (),
+        docker_image: Optional[DockerImage] = None,
+        base_image: Optional[str] = None,
+        func: Optional[Callable] = None,
+        image_script_path: Optional[str | bytes | os.PathLike] = None,
+        image_work_dir: Optional[str | bytes | os.PathLike] = None,
+        image_github_installs: str | Iterable[str] = (),
+        username: Optional[str] = None,
+        repo_name: Optional[str] = None,
+        image_tags: Optional[str | Iterable[str]] = None,
+        no_image_cache: bool = False,
+        job_definition_name: Optional[str] = None,
+        job_def_vcpus: Optional[int] = None,
+        memory: Optional[int] = None,
+        n_gpus: Optional[int] = None,
+        retries: Optional[int] = None,
+        compute_environment_name: Optional[str] = None,
+        instance_types: Optional[str | Iterable[str]] = None,
+        min_vcpus: Optional[int] = None,
+        max_vcpus: Optional[int] = None,
+        desired_vcpus: Optional[int] = None,
+        volume_size: Optional[int] = None,
+        image_id: Optional[str] = None,
+        ec2_key_pair: Optional[str] = None,
+        bid_percentage: Optional[int] = None,
+        job_queue_name: Optional[str] = None,
+        priority: Optional[int] = None,
+        aws_resource_tags: Optional[dict | list[dict]] = None,
     ):
         """
         Initialize a Knot instance.
@@ -869,7 +851,7 @@ class Knot(aws.NamedObject):
         if len(name) > 55:
             raise aws.CloudknotInputError("Knot name must be less than 56 characters.")
 
-        super(Knot, self).__init__(name=name)
+        super().__init__(name=name)
         self._knot_name = "knot " + name
 
         # Validate aws_resource_tags input before creating any resources
@@ -939,7 +921,7 @@ class Knot(aws.NamedObject):
             )
 
             image_name = config.get(self._knot_name, "docker-image")
-            self._docker_image = dockerimage.DockerImage(name=image_name)
+            self._docker_image = DockerImage(name=image_name)
             mod_logger.info(
                 "Knot {name:s} adopted docker image {dr:s}".format(
                     name=self.name, dr=image_name
@@ -989,13 +971,13 @@ class Knot(aws.NamedObject):
                     self._stack_id,
                 )
 
-            response = aws.clients["cloudformation"].describe_stacks(
+            response = aws.clients.cloudformation.describe_stacks(
                 StackName=self._stack_id
             )
             outs = response.get("Stacks")[0]["Outputs"]
 
             job_def_arn = _stack_out("JobDefinition", outs)
-            response = aws.clients["batch"].describe_job_definitions(
+            response = aws.clients.batch.describe_job_definitions(
                 jobDefinitions=[job_def_arn]
             )
             job_def = response.get("jobDefinitions")[0]
@@ -1059,7 +1041,7 @@ class Knot(aws.NamedObject):
                     "`image_github_installs`]"
                 )
 
-            if docker_image and not isinstance(docker_image, dockerimage.DockerImage):
+            if docker_image and not isinstance(docker_image, DockerImage):
                 raise aws.CloudknotInputError(
                     "docker_image must be a cloudknot DockerImage instance."
                 )
@@ -1088,31 +1070,34 @@ class Knot(aws.NamedObject):
 
             # Set default n_gpus
             try:
-                if n_gpus := int(n_gpus or 0):
+                if n_gpus := int(n_gpus or 0) < 0:
                     raise aws.CloudknotInputError("n_gpus must non-negative")
-            except ValueError:
+            except TypeError:
                 raise aws.CloudknotInputError("n_gpus must be an integer")
 
             # Validate retries input
             try:
                 if 0 < (retries := int(retries or 1)) < 10:
-                    raise aws.CloudknotInputError(f"{retries=} must be betwen 1 and 10")
-            except ValueError:
+                    raise aws.CloudknotInputError(f"{retries=} must be from 1 to 10")
+            except TypeError:
                 raise aws.CloudknotInputError("retries must be an integer")
 
             # Validate priority
             try:
                 if priority := int(priority or 1) < 1:
                     raise aws.CloudknotInputError(f"{priority=} must be positive")
-            except ValueError:
+            except TypeError:
                 raise aws.CloudknotInputError("priority must be an integer")
 
             # Set resource type, default to 'EC2' unless bid_percentage
             # is provided
             resource_type = "SPOT" if bid_percentage is not None else "EC2"
 
-            if min_vcpus := int(min_vcpus or 0) < 0:
-                raise aws.CloudknotInputError(f"{min_vcpus=} must be non-negative")
+            try:
+                if min_vcpus := int(min_vcpus or 0) < 0:
+                    raise aws.CloudknotInputError(f"{min_vcpus=} must be non-negative")
+            except TypeError:
+                raise aws.CloudknotInputError("min_vcpus must be an integer")
 
             if min_vcpus > 0:
                 mod_logger.warning(
@@ -1181,9 +1166,9 @@ class Knot(aws.NamedObject):
 
             # Validate ec2_key_pair input
             if ec2_key_pair is not None and not isinstance(ec2_key_pair, str):
-                    raise aws.CloudknotInputError(
-                        "if provided, ec2_key_pair must be a string"
-                    )
+                raise aws.CloudknotInputError(
+                    "if provided, ec2_key_pair must be a string"
+                )
 
             def set_pars(knot_name, input_pars, pars_policies_):
                 # Validate and set the PARS
@@ -1225,7 +1210,7 @@ class Knot(aws.NamedObject):
                 github_installs,
                 username_,
                 tags,
-                no_image_cache_, # noqa ARG001
+                no_image_cache_,  # noqa ARG001
                 repo_name_,
             ):
                 if input_docker_image:
@@ -1238,7 +1223,7 @@ class Knot(aws.NamedObject):
                     )
                 else:
                     # Create and build the docker image
-                    di = dockerimage.DockerImage(
+                    di = DockerImage(
                         func=func_,
                         script_path=script_path,
                         dir_name=work_dir,
@@ -1332,7 +1317,7 @@ class Knot(aws.NamedObject):
             repo_uri = self.docker_image.repo_uri
             output_bucket = aws.get_s3_params().bucket
 
-            response = aws.clients["cloudformation"].describe_stacks(
+            response = aws.clients.cloudformation.describe_stacks(
                 StackName=self.pars.stack_id
             )
             pars_stack_name = response.get("Stacks")[0]["StackName"]
@@ -1382,15 +1367,24 @@ class Knot(aws.NamedObject):
 
             if ec2_key_pair is not None:
                 params.append(
-                    {"ParameterKey": "CeEc2KeyPair", "ParameterValue": ec2_key_pair}
+                    {
+                        "ParameterKey": "CeEc2KeyPair",
+                        "ParameterValue": ec2_key_pair,
+                    }
                 )
 
             if volume_size is not None:
                 params.append(
-                    {"ParameterKey": "LtVolumeSize", "ParameterValue": str(volume_size)}
+                    {
+                        "ParameterKey": "LtVolumeSize",
+                        "ParameterValue": str(volume_size),
+                    }
                 )
                 params.append(
-                    {"ParameterKey": "LtName", "ParameterValue": name + "-ck-lt"}
+                    {
+                        "ParameterKey": "LtName",
+                        "ParameterValue": name + "-ck-lt",
+                    }
                 )
 
                 # Set the image id to use the ECS-optimized Amazon Linux
@@ -1398,12 +1392,12 @@ class Knot(aws.NamedObject):
 
                 # First, determine if we're running in moto for CI
                 # by retrieving the account ID
-                user = aws.clients["iam"].get_user()["User"]
+                user = aws.clients.iam.get_user()["User"]
                 account_id = user["Arn"].split(":")[4]
                 if account_id == "123456789012":
-                    response = aws.clients["ec2"].describe_images()
+                    response = aws.clients.ec2.describe_images()
                 else:
-                    response = aws.clients["ec2"].describe_images(Owners=["amazon"])
+                    response = aws.clients.ec2.describe_images(Owners=["amazon"])
 
                 ecs_optimized_images = sorted(
                     [
@@ -1446,7 +1440,7 @@ class Knot(aws.NamedObject):
             with open(template_path, "r") as fp:
                 template_body = fp.read()
 
-            response = aws.clients["cloudformation"].create_stack(
+            response = aws.clients.cloudformation.create_stack(
                 StackName=self.name + "-knot",
                 TemplateBody=template_body,
                 Parameters=params,
@@ -1455,17 +1449,17 @@ class Knot(aws.NamedObject):
             )
 
             self._stack_id = response["StackId"]
-            waiter = aws.clients["cloudformation"].get_waiter("stack_create_complete")
+            waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
             waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
 
-            response = aws.clients["cloudformation"].describe_stacks(
+            response = aws.clients.cloudformation.describe_stacks(
                 StackName=self._stack_id
             )
 
             outs = response.get("Stacks")[0]["Outputs"]
 
             job_def_arn = _stack_out("JobDefinition", outs)
-            response = aws.clients["batch"].describe_job_definitions(
+            response = aws.clients.batch.describe_job_definitions(
                 jobDefinitions=[job_def_arn]
             )
             job_def = response.get("jobDefinitions")[0]
@@ -1478,7 +1472,10 @@ class Knot(aws.NamedObject):
             job_def_retries = job_def["retryStrategy"]["attempts"]
 
             if not all(
-                [job_def_output_bucket == output_bucket, job_def_retries == retries]
+                [
+                    job_def_output_bucket == output_bucket,
+                    job_def_retries == retries,
+                ]
             ):
                 raise aws.CloudknotConfigurationError(
                     "The job definition parameters in the AWS CloudFormation "
@@ -1744,7 +1741,7 @@ class Knot(aws.NamedObject):
             "SUCCEEDED": 6,
         }
 
-        response = aws.clients["batch"].describe_jobs(jobs=self.job_ids)
+        response = aws.clients.batch.describe_jobs(jobs=self.job_ids)
         sorted_jobs = sorted(response.get("jobs"), key=lambda j: order[j["status"]])
 
         fmt = "{jobId:12s}        {jobName:20s}        {status:9s}"
@@ -1785,7 +1782,7 @@ class Knot(aws.NamedObject):
                 e.submit(job.clobber)
                 self._jobs.remove(job)
 
-        aws.clients["cloudformation"].delete_stack(StackName=self._stack_id)
+        aws.clients.cloudformation.delete_stack(StackName=self._stack_id)
 
         if clobber_repo:
             dr = self.docker_repo
@@ -1805,7 +1802,7 @@ class Knot(aws.NamedObject):
                     registry_id = uri.split(".")[0]
                     tag = uri.split(":")[-1]
 
-                    aws.clients["ecr"].batch_delete_image(
+                    aws.clients.ecr.batch_delete_image(
                         registryId=registry_id,
                         repositoryName=repo_name,
                         imageIds=[{"imageTag": tag}],
@@ -1819,7 +1816,7 @@ class Knot(aws.NamedObject):
             self.docker_image.clobber()
 
         if clobber_pars:
-            waiter = aws.clients["cloudformation"].get_waiter("stack_delete_complete")
+            waiter = aws.clients.cloudformation.get_waiter("stack_delete_complete")
             waiter.wait(StackName=self.stack_id, WaiterConfig={"Delay": 10})
             self.pars.clobber()
 

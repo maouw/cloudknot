@@ -103,7 +103,7 @@ def test_is_valid_stack(configured, aws_credentials):
     pars = ck.Pars(name="test-valid-stack")
     assert ck.config.is_valid_stack(stack_id=pars.stack_id)
 
-    ck.aws.clients["cloudformation"].delete_stack(StackName=pars.stack_id)
+    ck.aws.clients.cloudformation.delete_stack(StackName=pars.stack_id)
     assert not ck.config.is_valid_stack(stack_id=pars.stack_id)
 
 
@@ -115,7 +115,7 @@ def test_prune_stacks(configured, aws_credentials):
     pars0 = ck.Pars(name="test-prune-0")
     pars1 = ck.Pars(name="test-prune-1")
 
-    ck.aws.clients["cloudformation"].delete_stack(StackName=pars0.stack_id)
+    ck.aws.clients.cloudformation.delete_stack(StackName=pars0.stack_id)
     ck.config.prune_stacks()
 
     config = configparser.ConfigParser()
@@ -133,7 +133,7 @@ def test_prune_repos(configured, aws_credentials):
     repo1 = ck.aws.DockerRepo(name="test-prune-1")
     repo2 = ck.aws.DockerRepo(name="test-prune-2")
 
-    ck.aws.clients["ecr"].delete_repository(repositoryName=repo0.name)
+    ck.aws.clients.ecr.delete_repository(repositoryName=repo0.name)
     ck.config.prune_repos()
 
     config = configparser.ConfigParser()

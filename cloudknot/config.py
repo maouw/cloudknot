@@ -23,13 +23,14 @@ import docker
 from . import aws
 
 __all__ = [
-    "rlock",
-    "prune_stacks",
-    "prune",
-    "get_config_file",
     "add_resource",
+    "get_config_file",
+    "prune",
+    "prune_stacks",
     "remove_resource",
+    "rlock",
     "verify_sections",
+    "is_valid_stack",
 ]
 mod_logger = logging.getLogger(__name__)
 rlock = RLock()
@@ -151,7 +152,10 @@ def verify_sections():
 
         def section_approved(sec):
             return any(
-                [sec in approved_sections, sec.split(" ", 1)[0] in approved_sections]
+                [
+                    sec in approved_sections,
+                    sec.split(" ", 1)[0] in approved_sections,
+                ]
             )
 
         for section in config.sections():
@@ -164,14 +168,14 @@ def verify_sections():
 
 def is_valid_stack(stack_id):
     try:
-        response = aws.clients["cloudformation"].describe_stacks(StackName=stack_id)
-    except aws.clients["cloudformation"].exceptions.ClientError as e:
+        response = aws.clients.cloudformation.describe_stacks(StackName=stack_id)
+    except aws.clients.cloudformation.exceptions.ClientError as e:
         error_code = e.response.get("Error").get("Message")
         no_stack_code = "Stack with id {0:s} does not exist".format(stack_id)
         if error_code == no_stack_code:
             return False
-        else:  # pragma: nocover
-            raise e
+        # pragma: nocover
+        raise e
 
     no_stack = len(response.get("Stacks")) == 0 or response.get("Stacks")[0][
         "StackStatus"
@@ -254,13 +258,13 @@ def prune_repos():
             remove_repo = False
             try:
                 # If repo exists, retrieve its info
-                response = aws.clients["ecr"].describe_repositories(
+                response = aws.clients.ecr.describe_repositories(
                     repositoryNames=[repo_name]
                 )
                 uri = response["repositories"][0]["repositoryUri"]
                 if repo_uri != uri:
                     remove_repo = True
-            except aws.clients["ecr"].exceptions.RepositoryNotFoundException:
+            except aws.clients.ecr.exceptions.RepositoryNotFoundException:
                 remove_repo = True
             except botocore.exceptions.ClientError as e:
                 error_code = e.response["Error"]["Code"]
@@ -309,7 +313,7 @@ def prune_batch_jobs():
         aws.set_profile(profile)
         aws.set_region(region)
         for job_id in config[section]:
-            response = aws.clients["batch"].describe_jobs(jobs=[job_id])
+            response = aws.clients.batch.describe_jobs(jobs=[job_id])
             if not response.get("jobs"):
                 remove_resource(section, job_id)
                 mod_logger.info(
@@ -368,7 +372,7 @@ def prune_images():
 
                 try:
                     repo_info = aws.ecr._get_repo_info_from_uri(uri)
-                    response = aws.clients["ecr"].list_images(
+                    response = aws.clients.ecr.list_images(
                         registryId=repo_info["registry_id"],
                         repositoryName=repo_info["repo_name"],
                         maxResults=1000,

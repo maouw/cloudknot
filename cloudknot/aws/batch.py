@@ -55,7 +55,7 @@ def _exists_already(job_id):
     # make all but the first value default to None
     JobExists.__new__.__defaults__ = (None,) * (len(JobExists._fields) - 1)
 
-    response = clients["batch"].describe_jobs(jobs=[job_id])
+    response = clients.batch.describe_jobs(jobs=[job_id])
 
     if response.get("jobs"):
         job = response.get("jobs")[0]
@@ -66,9 +66,7 @@ def _exists_already(job_id):
 
         array_job = "arrayProperties" in job
 
-        response = clients["batch"].describe_job_definitions(
-            jobDefinitions=[job_def_arn]
-        )
+        response = clients.batch.describe_job_definitions(jobDefinitions=[job_def_arn])
         job_def = response.get("jobDefinitions")[0]
         bucket_env = [
             e
@@ -173,7 +171,7 @@ class BatchJob(NamedObject):
                     "jobId {id:s} does not exists".format(id=job_id), job_id
                 )
 
-            super(BatchJob, self).__init__(name=job.name)
+            super().__init__(name=job.name)
 
             self._job_queue_arn = job.job_queue_arn
             self._job_definition = job.job_definition
@@ -192,11 +190,11 @@ class BatchJob(NamedObject):
             )
 
             try:
-                response = clients["s3"].get_object(Bucket=bucket, Key=key)
+                response = clients.s3.get_object(Bucket=bucket, Key=key)
                 self._input = pickle.loads(response.get("Body").read())
             except (
-                clients["s3"].exceptions.NoSuchBucket,
-                clients["s3"].exceptions.NoSuchKey,
+                clients.s3.exceptions.NoSuchBucket,
+                clients.s3.exceptions.NoSuchKey,
             ):
                 self._input = None
 
@@ -207,7 +205,7 @@ class BatchJob(NamedObject):
                 "Retrieved pre-existing batch job {id:s}".format(id=self.job_id)
             )
         else:
-            super(BatchJob, self).__init__(name=name)
+            super().__init__(name=name)
 
             if not isinstance(job_queue, str):
                 raise CloudknotInputError("job_queue must be a string.")
@@ -310,7 +308,7 @@ class BatchJob(NamedObject):
         # We have to submit before uploading the input in order to get the
         # jobID first.
         if self.array_job:
-            response = clients["batch"].submit_job(
+            response = clients.batch.submit_job(
                 jobName=self.name,
                 jobQueue=self.job_queue_arn,
                 arrayProperties={"size": len(self.input)},
@@ -318,7 +316,7 @@ class BatchJob(NamedObject):
                 containerOverrides=container_overrides,
             )
         else:
-            response = clients["batch"].submit_job(
+            response = clients.batch.submit_job(
                 jobName=self.name,
                 jobQueue=self.job_queue_arn,
                 jobDefinition=self.job_definition.arn,
@@ -327,16 +325,21 @@ class BatchJob(NamedObject):
 
         job_id = response["jobId"]
         key = "/".join(
-            ["cloudknot.jobs", self.job_definition.name, job_id, "input.pickle"]
+            [
+                "cloudknot.jobs",
+                self.job_definition.name,
+                job_id,
+                "input.pickle",
+            ]
         )
 
         # Upload the input pickle
         if sse:
-            clients["s3"].put_object(
+            clients.s3.put_object(
                 Bucket=bucket, Body=pickled_input, Key=key, ServerSideEncryption=sse
             )
         else:
-            clients["s3"].put_object(Bucket=bucket, Body=pickled_input, Key=key)
+            clients.s3.put_object(Bucket=bucket, Body=pickled_input, Key=key)
 
         # Add this job to the list of jobs in the config file
         self._section_name = self._get_section_name("batch-jobs")
@@ -369,7 +372,7 @@ class BatchJob(NamedObject):
         self.check_profile_and_region()
 
         # Query the job_id
-        response = clients["batch"].describe_jobs(jobs=[self.job_id])
+        response = clients.batch.describe_jobs(jobs=[self.job_id])
         job = response.get("jobs")[0]
 
         # Return only a subset of the job dictionary
@@ -452,9 +455,9 @@ class BatchJob(NamedObject):
             )
 
             try:
-                response = clients["s3"].get_object(Bucket=bucket, Key=key)
+                response = clients.s3.get_object(Bucket=bucket, Key=key)
                 return pickle.loads(response.get("Body").read())
-            except clients["s3"].exceptions.NoSuchKey:
+            except clients.s3.exceptions.NoSuchKey:
                 attempt -= 1
 
         raise CKTimeoutError(
@@ -535,14 +538,14 @@ class BatchJob(NamedObject):
         state = self.status["status"]
 
         if state in {"SUBMITTED", "PENDING", "RUNNABLE"}:
-            clients["batch"].cancel_job(jobId=self.job_id, reason=reason)
+            clients.batch.cancel_job(jobId=self.job_id, reason=reason)
             mod_logger.info(
                 "Cancelled job {name:s} with jobID {job_id:s}".format(
                     name=self.name, job_id=self.job_id
                 )
             )
         elif state in {"STARTING", "RUNNING"}:
-            clients["batch"].terminate_job(jobId=self.job_id, reason=reason)
+            clients.batch.terminate_job(jobId=self.job_id, reason=reason)
             mod_logger.info(
                 "Terminated job {name:s} with jobID {job_id:s}".format(
                     name=self.name, job_id=self.job_id

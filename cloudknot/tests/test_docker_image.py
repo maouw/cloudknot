@@ -70,7 +70,7 @@ def bucket_cleanup(aws_credentials):
     bucket_policy = s3_params.policy
 
     if (old_s3_params is None) or bucket_policy == old_s3_params.policy:
-        iam = ck.aws.clients["iam"]
+        iam = ck.aws.clients.iam
         paginator = iam.get_paginator("list_policies")
         response_iterator = paginator.paginate(Scope="Local", PathPrefix="/cloudknot/")
 
@@ -118,7 +118,7 @@ def bucket_cleanup(aws_credentials):
 @mock_all
 def cleanup_repos(bucket_cleanup):
     yield None
-    ecr = ck.aws.clients["ecr"]
+    ecr = ck.aws.clients.ecr
     config_file = ck.config.get_config_file()
     section_suffix = ck.get_profile() + " " + ck.get_region()
     repos_section_name = "docker-repos " + section_suffix
@@ -192,7 +192,7 @@ def test_DockerImage(cleanup_repos):
     ck.refresh_clients()
     config = configparser.ConfigParser()
     config_file = ck.config.get_config_file()
-    ecr = ck.aws.clients["ecr"]
+    ecr = ck.aws.clients.ecr
 
     try:
         correct_pip_imports = {

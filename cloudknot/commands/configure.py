@@ -41,7 +41,7 @@ def pull_and_push_base_images(ecr_repo):
     refresh_clients()
 
     try:
-        response = clients["ecr"].get_authorization_token()
+        response = clients.ecr.get_authorization_token()
     except botocore.exceptions.ClientError as e:
         raise RuntimeError(
             "Could not get ECR authorization token to log in to the Docker registry"

@@ -15,7 +15,7 @@ mod_logger = logging.getLogger(__name__)
 
 def _get_repo_info_from_uri(repo_uri):
     # Get all repositories
-    repositories = clients["ecr"].describe_repositories(maxResults=500)["repositories"]
+    repositories = clients.ecr.describe_repositories(maxResults=500)["repositories"]
 
     _repo_uri = repo_uri.split(":")[0]
     # Filter by matching on repo_uri
@@ -49,7 +49,7 @@ class DockerRepo(NamedObject):
         aws_resource_tags : dict or list of dicts
             Additional AWS resource tags to apply to this repository
         """
-        super(DockerRepo, self).__init__(name=name)
+        super().__init__(name=name)
 
         # Validate aws_resource_tags input before creating any resources
         self._tags = get_tags(
@@ -102,16 +102,16 @@ class DockerRepo(NamedObject):
         repo_name = repo_registry_id = repo_uri = None
         try:
             # If repo exists, retrieve its info
-            response = clients["ecr"].describe_repositories(repositoryNames=[self.name])
+            response = clients.ecr.describe_repositories(repositoryNames=[self.name])
 
             repo_arn = response["repositories"][0]["repositoryArn"]
             repo_name = response["repositories"][0]["repositoryName"]
             repo_uri = response["repositories"][0]["repositoryUri"]
             repo_registry_id = response["repositories"][0]["registryId"]
             repo_created = False
-        except clients["ecr"].exceptions.RepositoryNotFoundException:
+        except clients.ecr.exceptions.RepositoryNotFoundException:
             # If it doesn't exists already, then create it
-            response = clients["ecr"].create_repository(repositoryName=self.name)
+            response = clients.ecr.create_repository(repositoryName=self.name)
 
             repo_arn = response["repository"]["repositoryArn"]
             repo_name = response["repository"]["repositoryName"]
@@ -126,7 +126,7 @@ class DockerRepo(NamedObject):
                 or "RepositoryNotFoundException" in message
             ):
                 # If it doesn't exists already, then create it
-                response = clients["ecr"].create_repository(repositoryName=self.name)
+                response = clients.ecr.create_repository(repositoryName=self.name)
 
                 repo_arn = response["repository"]["repositoryArn"]
                 repo_name = response["repository"]["repositoryName"]
@@ -148,7 +148,7 @@ class DockerRepo(NamedObject):
             )
 
         try:
-            clients["ecr"].tag_resource(resourceArn=repo_arn, tags=self.tags)
+            clients.ecr.tag_resource(resourceArn=repo_arn, tags=self.tags)
         except NotImplementedError as e:
             moto_msg = "The tag_resource action has not been implemented"
             if moto_msg in e.args:
@@ -173,12 +173,12 @@ class DockerRepo(NamedObject):
         if self.name != get_ecr_repo():
             try:
                 # Remove the remote docker image
-                clients["ecr"].delete_repository(
+                clients.ecr.delete_repository(
                     registryId=self.repo_registry_id,
                     repositoryName=self.name,
                     force=True,
                 )
-            except clients["ecr"].exceptions.RepositoryNotFoundException:
+            except clients.ecr.exceptions.RepositoryNotFoundException:
                 # It doesn't exist anyway, so carry on
                 pass
             except botocore.exceptions.ClientError as e:
