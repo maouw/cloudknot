@@ -9,6 +9,8 @@ import os
 import tempfile
 from base64 import b64decode
 from string import Template
+from collections.abc import Callable, Collection, Iterable
+from typing import Optional
 
 import botocore.exceptions
 import docker
@@ -27,6 +29,7 @@ from .aws.base_classes import (
 from .aws.ecr import DockerRepo
 from .config import get_config_file, rlock
 from .github_requirements import parse_github_requirement
+from .validate import box_iterable
 
 __all__ = ["DEFAULT_PICKLE_PROTOCOL", "DockerImage"]
 
@@ -52,118 +55,73 @@ class DockerImage(aws.NamedObject):
     packages will not be included in requirements.txt, DockerImage will throw
     a warning, and the user must install those packages by hand in the
     Dockerfile.
-
-    Parameters
-    ----------
-    name : str
-        Name of DockerImage, only used to retrieve DockerImage from
-        config file info. Do not use to create new DockerImage.
-        Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
-
-    func : function
-        Python function to be dockerized
-
-    script_path : string
-        Path to file with python script to be dockerized
-
-    dir_name : string
-        Directory to store Dockerfile, requirements.txt, and python
-        script with CLI
-        Default: parent directory of script if `script_path` is provided
-        else DockerImage creates a new directory, accessible by the
-        `build_path` property.
-
-    base_image : string
-        Docker base image on which to base this Dockerfile
-        Default: None will use the python base image for the
-        current version of python
-
-    github_installs : string or sequence of strings
-        Github addresses for packages to install from github rather than
-        PyPI (e.g. git://github.com/nrdg/cloudknot.git or
-        git://github.com/nrdg/cloudknot.git@newfeaturebranch)
-        Default: ()
-
-    ignore_installed : bool, default=False
-        If True, add the --ignore-installed flag when installing all GitHub
-        packages.
-
-    pin_pip_versions : bool, default=False
-        If True, pin packages in pip requirements file to most recent version.
-
-    username : string
-        Default user created in the Dockerfile
-        Default: 'cloudknot-user'
-
-    overwrite : bool, default=False
-        If True, allow overwriting any existing Dockerfiles,
-        requirements files, or python scripts previously created by
-        cloudknot
-
     """
 
     def __init__(
         self,
-        name=None,
-        func=None,
-        script_path=None,
-        dir_name=None,
-        base_image=None,
-        github_installs=(),
-        ignore_installed=False,
-        pin_pip_versions=False,
-        username=None,
-        overwrite=False,
+        name: Optional[str] = None,
+        func: Optional[Callable] = None,
+        script_path: Optional[str] = None,
+        dir_name: Optional[str] = None,
+        base_image: Optional[str] = None,
+        github_installs: Optional[str | Collection[str]] = (),
+        ignore_installed: bool = False,
+        pin_pip_versions: bool = False,
+        username: Optional[str] = None,
+        overwrite: bool = False,
     ):
         """
         Initialize a DockerImage instance.
 
         Parameters
         ----------
-        name : str
-            Name of DockerImage, only used to save/retrieve DockerImage from
+        name : str, optional
+            Name of `DockerImage()`, only used to save/retrieve `DockerImage()` from
             config file info.
-            Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
+            Must satisfy regular expression pattern: r'[a-zA-Z][-a-zA-Z0-9]*'.
 
-        func : function
-            Python function to be dockerized
+        func : Callable, optional
+            Python Callable or function to be dockerized.
 
-        script_path : string
-            Path to file with python script to be dockerized
+        script_path : str, optional
+            Path to file with python script to be dockerized.
 
-        dir_name : string
+        dir_name : str, optional
             Directory to store Dockerfile, requirements.txt, and python
-            script with CLI
+            script with CLI.
             Default: parent directory of script if `script_path` is provided
-            else DockerImage creates a new directory, accessible by the
+            else `DockerImage()` creates a new directory, accessible by the
             `build_path` property.
 
-        base_image : string
-            Docker base image on which to base this Dockerfile
+        base_image : str, optional
+            Docker base image on which to base this Dockerfile.
             Default: None will use the python base image for the
             current version of python
 
-        github_installs : string or sequence of strings
+        github_installs : str or collection of str
             Github addresses for packages to install from github rather than
             PyPI (e.g. git://github.com/nrdg/cloudknot.git or
             git://github.com/nrdg/cloudknot.git@newfeaturebranch)
             Default: ()
 
-        ignore_installed : bool, default=False
+        ignore_installed : bool
             If True, add the --ignore-installed flag when installing all GitHub
             packages.
+            Default: False
 
-        pin_pip_versions : bool, default=False
+        pin_pip_versions : bool
             If True, pin packages in pip requirements file to most recent version.
+            Default: False
 
-        username : string
-            Default user created in the Dockerfile
+        username : str, optional
+            Default user created in the Dockerfile.
             Default: 'cloudknot-user'
 
-        overwrite : bool, default=False
+        overwrite : bool
             If True, allow overwriting any existing Dockerfiles,
             requirements files, or python scripts previously created by
-            cloudknot
+            cloudknot.
+            Default: False
         """
         # User must specify at least `name`, `func`, or `script_path`
         if not any([name, func, script_path]):
@@ -186,9 +144,7 @@ class DockerImage(aws.NamedObject):
             # Validate name input
             if not isinstance(name, str):
                 raise CloudknotInputError(
-                    "Docker image name must be a "
-                    "string. You passed a {t!s}"
-                    "".format(t=type(name))
+                    f"Docker image name must be a `str`. You passed a `{type(name).__name__}`"
                 )
 
             super().__init__(name=name)
@@ -231,16 +187,15 @@ class DockerImage(aws.NamedObject):
                 images_list = [s.split(":") for s in images_str.split()]
                 self._images = [{"name": i[0], "tag": i[1]} for i in images_list]
 
-                uri = config.get(section_name, "repo-uri")
-                self._repo_uri = uri if uri else None
-
-                if uri:
+                if uri := config.get(section_name, "repo-uri"):
                     repo_info = aws.ecr._get_repo_info_from_uri(repo_uri=uri)
                     self._repo_registry_id = repo_info["registry_id"]
                     self._repo_name = repo_info["repo_name"]
+                    self._repo_uri = uri
                 else:
                     self._repo_registry_id = None
                     self._repo_name = None
+                    self._repo_uri = None
 
                 # Set self.pip_imports and self.missing_imports
                 self._set_imports()
@@ -285,33 +240,25 @@ class DockerImage(aws.NamedObject):
                         )
 
                         # Use input params if provided, fall back on config values
-                        username = username if username else self._username
-                        base_image = base_image if base_image else self._base_image
-                        github_installs = (
-                            github_installs
-                            if github_installs
-                            else self._github_installs
-                        )
-                        func = func if func else self._func
+                        username = username or self._username
+                        base_image = base_image or self._base_image
+                        github_installs = github_installs or self._github_installs
+                        func = func or self._func
                         script_path = self._script_path
                         dir_name = self._build_path
                         clobber_script = self._clobber_script
 
         if not name or params_changed:
             self._func = func
-            self._username = username if username else "cloudknot-user"
+            self._username = username or "cloudknot-user"
 
-            if base_image is not None:
-                self._base_image = base_image
-            else:
-                self._base_image = "python:3"
+            self._base_image = (
+                base_image or "python:3"
+            )  # FIXME: Use sys.version_info to get python version
 
-            if self._base_image in {"python:3", "python:3.8"}:
+            if self._base_image == "python:3":
                 mod_logger.warning(
-                    "Warning, your Dockerfile will have a base image of python:3, "
-                    "which may default to Python 3.8. This may cause dependency "
-                    "conflicts. If this build fails, consider rerunning with the "
-                    "`base_image='python:3.7' parameter."
+                    "Warning, your Dockerfile will have a base image of 'python:3', which may default to an unknown Python version. This may cause dependency conflicts. If this build fails, consider rerunning with the `base_image='python:{cur_python_version_tag}'` parameter."
                 )
 
             # Validate dir_name input
@@ -326,8 +273,7 @@ class DockerImage(aws.NamedObject):
                 # Check that it is a valid path
                 if not os.path.isfile(script_path):
                     raise CloudknotInputError(
-                        "If provided, `script_path` must be an existing "
-                        "regular file."
+                        "If provided, `script_path` must be an existing regular file."
                     )
 
                 self._script_path = os.path.abspath(script_path)
@@ -340,10 +286,11 @@ class DockerImage(aws.NamedObject):
                 )
 
                 # Set the parent directory
-                if dir_name:
-                    self._build_path = os.path.abspath(dir_name)
-                else:
-                    self._build_path = os.path.dirname(self.script_path)
+                self._build_path = (
+                    os.path.abspath(dir_name)
+                    if dir_name
+                    else os.path.dirname(self.script_path)
+                )
 
                 if self._func is not None:
                     self._write_script()
@@ -404,14 +351,14 @@ class DockerImage(aws.NamedObject):
                 )
 
             # Validate github installs before building Dockerfile
-            if isinstance(github_installs, str):
-                self._github_installs = [github_installs]
-            elif all(isinstance(x, str) for x in github_installs):
-                self._github_installs = list(github_installs)
-            else:
-                raise CloudknotInputError(
-                    "github_installs must be a string or a sequence of strings."
+            try:
+                github_installs = box_iterable(
+                    github_installs, Iterable[str], box=list, make_unique=True
                 )
+            except (TypeError, ValueError):
+                raise CloudknotInputError(
+                    "`github_installs` must be a string or a sequence of str."
+                ) from None
 
             self._github_installs = [
                 parse_github_requirement(install) for install in github_installs
@@ -745,7 +692,7 @@ class DockerImage(aws.NamedObject):
         repo : DockerRepo, optional
             DockerRepo instance to which to push this image
 
-        repo_uri : string, optional
+        repo_uri : str, optional
             URI for the docker repository to which to push this instance
 
         """

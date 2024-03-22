@@ -27,31 +27,34 @@ extend-select = [
 	"LOG", 	 	# flake8-logging
 	"RUF", 	 	# ruff-specific
 	"PERF",  	# Perflint
-	"I" 	 	# isort
+	"I", 	 	# isort,
+	"ANN", 	 	# flake8-annotations
+	"S", 	 	# flake8-bandit
+	"C4", 	 	# flake8-comprehensions
 ]
 
 extend-ignore = [
-	"E501",
-	"N802",
-	"N806",
-	"E203",
-	"C408",
-	"PLE1205",
-	"ISC001",
-	"RUF005",
-	"FLY002",
-	"PLR0913",
-	"PLR2004",
-	"PLR0912",
-	"PLR0915",
-	"C901",
-	"D400",
-	"PERF203",
-	"B904",
-	"PLW1514",
-	"RUF005",
-	"D103",
-	"D105",
-	"D104"
+#	"E501",
+#	"N802",
+#	"N806",
+#	"E203",
+#	"C408",
+#	"PLE1205",
+#	"ISC001",
+#	"RUF005",
+#	"FLY002",
+#	"PLR0913",
+#	"PLR2004",
+#	"PLR0912",
+#	"PLR0915",
+#	"C901",
+#	"D400",
+#	"PERF203",
+#	"B904",
+#	"PLW1514",
+#	"RUF005",
+#	"D103",
+#	"D105",
+#	"D104"
 ]
 

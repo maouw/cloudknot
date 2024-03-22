@@ -5,11 +5,9 @@ import ipaddress
 import logging
 import os
 from collections import namedtuple
-from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
-
-# from typing import Literal
-from typing import Callable, Optional
+from collections.abc import Callable, Collection, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Optional
 
 import botocore
 import botocore.exceptions
@@ -17,9 +15,9 @@ import botocore.exceptions
 from . import aws
 from .config import get_config_file, is_valid_stack, rlock
 from .dockerimage import DockerImage
+from .validate import box_iterable
 
 __all__ = ["Knot", "Pars"]
-
 
 mod_logger = logging.getLogger(__name__)
 
@@ -55,56 +53,58 @@ class Pars(aws.NamedObject):
         batch_service_role_name: Optional[str] = None,
         ecs_instance_role_name: Optional[str] = None,
         spot_fleet_role_name: Optional[str] = None,
-        policies: tuple[str] = (),
+        policies: Optional[tuple[str]] = None,
         use_default_vpc: bool = True,
         ipv4_cidr: Optional[str] = None,
-        instance_tenancy: str = "default",  # Literal["default", "dedicated"] = "default",
-        aws_resource_tags: dict | list[dict] | None = None,
+        instance_tenancy: str = "default",
+        aws_resource_tags: dict | Collection[dict] | None = None,
     ):
         """Initialize a PARS instance.
 
         Parameters
         ----------
-        name : str
-            The name of this PARS. If `pars name` exists in the config file,
-            Pars will retrieve those PARS resource parameters. Otherwise,
-            Pars will create a new PARS with this name.
+        name : str, optional
+            The name of this PARS. If 'pars name' exists in the config file, Pars will
+            retrieve those PARS resource parameters. Otherwise, `Pars()` will create a new
+            PARS with this name.
             Must be less than 46 characters.
-            Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
-            Default: '${AWS-username}-default'
+            Must satisfy regular expression pattern: r'[a-zA-Z][-a-zA-Z0-9]*'.
+            Default: ${AWS-username}-default
 
-        batch_service_role_name : str
-            Name of this PARS' batch service IAM role. If the role already
-            exists, Pars will adopt it. Otherwise, it will create it.
+        batch_service_role_name : str, optional
+            Name of this PARS' batch service IAM role. If the role already exists, Pars
+            will adopt it. Otherwise, it will create it.
             Default: name + '-cloudknot-batch-service-role'
 
-        ecs_instance_role_name : str
-            Name of this PARS' ECS instance IAM role. If the role already
-            exists, Pars will adopt it. Otherwise, it will create it.
+        ecs_instance_role_name : str, optional
+            Name of this PARS' ECS instance IAM role. If the role already exists,
+            `Pars()` will adopt it. Otherwise, it will create it.
             Default: name + '-cloudknot-ecs-instance-role'
 
-        spot_fleet_role_name : str
-            Name of this PARS' spot fleet IAM role. If the role already
-            exists, Pars will adopt it. Otherwise, it will create it.
+        spot_fleet_role_name : str, optional
+            Name of this PARS' spot fleet IAM role. If the role already exists, `Pars()`
+            will adopt it. Otherwise, it will create it.
             Default: name + '-cloudknot-spot-fleet-role'
 
-        policies : tuple of strings
-            tuple of names of AWS policy ARNs to attach to each role
-            Default: ()
+        policies : tuple[str], optional
+            Names of AWS policy ARNs to attach to each role.
+            Default: None
 
         use_default_vpc : bool
-            if True, create or retrieve the default VPC
-            if False, use other input args to create a non-default VPC
+            If True, create or retrieve the default VPC. Otherwise, use input arguments
+            to create a non-default VPC.
+            Default: True
 
-        ipv4_cidr : string
-            IPv4 CIDR block to be used for creation of a new VPC
+        ipv4_cidr : str, optional
+            IPv4 CIDR block to be used for creation of a new VPC.
 
-        instance_tenancy : string
-            Instance tenancy for this VPC, one of ['default', 'dedicated']
+        instance_tenancy : str, optional, {'default', 'dedicated'}
+            Instance tenancy for this VPC.
             Default: 'default'
 
-        aws_resource_tags : dict or list of dicts
-            Additional AWS resource tags to apply to this repository
+        aws_resource_tags : dict | Collection[dict], optional
+            Additional AWS resource tags to apply to this repository.
+            Default: None
         """
         # Validate name input
         match name := f"{aws.get_user()}-default" if name is None else name:
@@ -128,33 +128,223 @@ class Pars(aws.NamedObject):
 
         self._pars_name = "pars " + self.name
         if self._pars_name in config.sections():
-            self._region = config.get(self._pars_name, "region")
-            self._profile = config.get(self._pars_name, "profile")
-            self.check_profile_and_region()
+            self._init_cf_from_config(
+                batch_service_role_name,
+                config,
+                ecs_instance_role_name,
+                instance_tenancy,
+                ipv4_cidr,
+                name,
+                policies,
+                spot_fleet_role_name,
+            )
+        else:
+            # Pars doesn't exist, use input to create resources
+            self._init_cf_from_input(
+                batch_service_role_name,
+                config,
+                ecs_instance_role_name,
+                instance_tenancy,
+                ipv4_cidr,
+                policies,
+                spot_fleet_role_name,
+                use_default_vpc,
+            )
 
-            mod_logger.info("Found PARS {name:s} in config".format(name=name))
-
-            self._stack_id = config.get(self._pars_name, "stack-id")
-
-            if not is_valid_stack(self._stack_id):
-                # Remove this section from the config file
-                with rlock:
-                    config.read(get_config_file())
-                    config.remove_section(self._pars_name)
-                    with open(get_config_file(), "w") as f:
-                        config.write(f)
-                raise aws.ResourceDoesNotExistException(
-                    "Cloudknot found this PARS in its config file, but "
-                    "the PARS stack that you requested does not exist on "
-                    "AWS. Cloudknot has deleted this PARS from the config "
-                    "file, so you may be able to create a new one simply "
-                    "by re-running your previous command.",
-                    self._stack_id,
+    def _init_cf_from_input(
+        self,
+        batch_service_role_name,
+        config,
+        ecs_instance_role_name,
+        instance_tenancy,
+        ipv4_cidr,
+        name,
+        policies,
+        spot_fleet_role_name,
+        use_default_vpc,
+    ):
+        def validated_name(role_name, fallback_suffix):
+            role_name = role_name or f"{name}-{fallback_suffix}"
+            if not isinstance(role_name, str):
+                raise aws.CloudknotInputError(
+                    f"If provided, role names must be strings (got a {type(role_name).__name__}) with {fallback_suffix=}."
                 )
+            return role_name
+
+        batch_service_role_name = validated_name(
+            batch_service_role_name, "batch-service-role"
+        )
+        ecs_instance_role_name = validated_name(
+            ecs_instance_role_name, "ecs-instance-role"
+        )
+        spot_fleet_role_name = validated_name(spot_fleet_role_name, "spot-fleet-role")
+        # Check the user supplied policies. Remove redundant entries
+        policies = policies or ()
+        try:
+            input_policies = box_iterable(
+                policies, Iterable[str], box=tuple, make_unique=True
+            )
+        except (TypeError, ValueError):
+            raise aws.CloudknotInputError(
+                "Policies must be a `str` or a collection of `str`."
+            ) from None
+        # Validate policies against the available policies
+        policy_arns = []
+        policy_names = []
+        for policy in input_policies:
+            try:
+                aws.clients.iam.get_policy(PolicyArn=policy)
+                policy_arns.append(policy)
+            except (
+                aws.clients.iam.exceptions.InvalidInputException,
+                aws.clients.iam.exceptions.NoSuchEntityException,
+                botocore.exceptions.ParamValidationError,
+            ):
+                policy_names.append(policy)
+        if policy_names:
+            # Get all AWS policies
+            paginator = aws.clients.iam.get_paginator("list_policies")
+            response_iterator = paginator.paginate()
+
+            # response_iterator is a list of dicts. First convert to list of lists
+            # and then flatten to a single list
+            response_policies = [response["Policies"] for response in response_iterator]
+            policies_list = [lst for sublist in response_policies for lst in sublist]
+
+            aws_policies = {d["PolicyName"]: d["Arn"] for d in policies_list}
+
+            # If input policies are not subset of aws_policies, throw error
+
+            if bad_policies := set(policy_names) - set(aws_policies.keys()):
+                raise aws.CloudknotInputError(
+                    f"Could not find the policies {bad_policies} on AWS."
+                )
+            policy_arns += [aws_policies[policy] for policy in policy_names]
+        s3_params = aws.get_s3_params()
+        policy_list = [s3_params.policy_arn] + list(policy_arns)
+        policies = ",".join(policy_list)
+        if use_default_vpc:
+            if any([ipv4_cidr, instance_tenancy]):
+                raise aws.CloudknotInputError(
+                    "if using the default VPC, you cannot specify "
+                    "`ipv4_cidr` or `instance_tenancy`."
+                )
+
+            # Retrieve the default VPC ID
+            try:
+                response = aws.clients.ec2.create_default_vpc()
+                vpc_id = response.get("Vpc").get("VpcId")
+            except aws.clients.ec2.exceptions.ClientError as e:
+                error_code = e.response.get("Error").get("Code")
+                match error_code:
+                    case "DefaultVpcAlreadyExists":
+                        # Then use first default VPC
+                        response = aws.clients.ec2.describe_vpcs(
+                            Filters=[{"Name": "isDefault", "Values": ["true"]}]
+                        )
+                        vpc_id = response.get("Vpcs")[0].get("VpcId")
+
+                    case "UnauthorizedOperation":
+                        raise aws.CannotCreateResourceException(
+                            "Cannot create a default VPC because this is an "
+                            "unauthorized operation. You may not have the "
+                            "proper permissions to create a default VPC."
+                        ) from e
+                    case "OperationNotPermitted":
+                        raise aws.CannotCreateResourceException(
+                            "Cannot create a default VPC because this is an "
+                            "unauthorized operation. You might have resources "
+                            "in EC2-Classic in the current region."
+                        ) from e
+                    case _:
+                        raise e
+
+            # Retrieve the subnets for the default VPC
+            paginator = aws.clients.ec2.get_paginator("describe_subnets")
+            response_iterator = paginator.paginate(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )
+
+            # response_iterator is a list of dicts. First convert to list
+            # of lists and then flatten to a single list
+            response_subnets = [response["Subnets"] for response in response_iterator]
+            subnets_list = [lst for sublist in response_subnets for lst in sublist]
+            subnet_ids = [d["SubnetId"] for d in subnets_list]
+            subnet_zones = [d["AvailabilityZone"] for d in subnets_list]
+
+            response = aws.clients.ec2.describe_availability_zones()
+            zones = [
+                d["ZoneName"]
+                for d in response.get("AvailabilityZones")
+                if d["State"] == "available"
+            ]
+
+            # If this region doesn't have a subnet in each availability
+            # zone, then create the required subnets and repopulate
+            # the subnet list
+            if set(subnet_zones) < set(zones):
+                for z in set(zones) - set(subnet_zones):
+                    aws.clients.ec2.create_default_subnet(AvailabilityZone=z)
+
+                response_iterator = paginator.paginate(
+                    Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+                )
+
+                # response_iterator is a list of dicts. First convert to
+                # list of lists and then flatten to a single list
+                response_subnets = [
+                    response["Subnets"] for response in response_iterator
+                ]
+                subnets_list = [lst for sublist in response_subnets for lst in sublist]
+                subnet_ids = [d["SubnetId"] for d in subnets_list]
+
+            template_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "templates",
+                    "pars-with-default-vpc.template",
+                )
+            )
+
+            with open(template_path, "r") as fp:
+                template_body = fp.read()
+
+            response = aws.clients.cloudformation.create_stack(
+                StackName=self.name + "-pars",
+                TemplateBody=template_body,
+                Parameters=[
+                    {
+                        "ParameterKey": "BatchServiceRoleName",
+                        "ParameterValue": batch_service_role_name,
+                    },
+                    {
+                        "ParameterKey": "EcsInstanceRoleName",
+                        "ParameterValue": ecs_instance_role_name,
+                    },
+                    {
+                        "ParameterKey": "SpotFleetRoleName",
+                        "ParameterValue": spot_fleet_role_name,
+                    },
+                    {"ParameterKey": "IamPolicies", "ParameterValue": policies},
+                    {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
+                    {
+                        "ParameterKey": "Subnets",
+                        "ParameterValue": ",".join(subnet_ids),
+                    },
+                ],
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+                Tags=self.tags,
+            )
+
+            self._stack_id = response["StackId"]
+
+            waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
+            waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
 
             response = aws.clients.cloudformation.describe_stacks(
                 StackName=self._stack_id
             )
+
             outs = response.get("Stacks")[0]["Outputs"]
 
             self._batch_service_role = _stack_out("BatchServiceRole", outs)
@@ -164,409 +354,227 @@ class Pars(aws.NamedObject):
             self._vpc = _stack_out("VpcId", outs)
             self._subnets = _stack_out("SubnetIds", outs).split(",")
             self._security_group = _stack_out("SecurityGroupId", outs)
-
-            vpc_response = aws.clients.ec2.describe_vpcs(VpcIds=[self._vpc])["Vpcs"][0]
-            stack_instance_tenancy = vpc_response["InstanceTenancy"]
-            stack_ipv4_cidr = vpc_response["CidrBlock"]
-            ecs_response = aws.clients.iam.list_attached_role_policies(
-                RoleName=self._ecs_instance_role.split("/")[-1]
-            )
-            stack_policies = {d["PolicyName"] for d in ecs_response["AttachedPolicies"]}
-
-            # Pars exists, check that user did not provide any conflicting
-            # resource names. This dict has values that are tuples, the first
-            # value of which is the provided input parameter in __init__
-            # and the second of which is the resource name in the AWS stack
-            input_params = {
-                "batch_service_role_name": (
-                    batch_service_role_name,
-                    self._batch_service_role,
-                ),
-                "ecs_instance_role_name": (
-                    ecs_instance_role_name,
-                    self._ecs_instance_role,
-                ),
-                "spot_fleet_role_name": (spot_fleet_role_name, self._spot_fleet_role),
-                "ipv4_cidr": (ipv4_cidr, stack_ipv4_cidr),
-                "instance_tenancy": (instance_tenancy, stack_instance_tenancy),
-            }
-
-            conflicting_params = {
-                k: v for k, v in input_params.items() if v[0] and v[1] != v[0]
-            }
-
-            # Inspect policies separately since we only require policies
-            # the input to be a subset of the stack-defined policies
-            if not set(policies) <= stack_policies:
-                conflicting_params["policies"] = (set(policies), stack_policies)
-
-            if conflicting_params:
-                raise aws.CloudknotInputError(
-                    "You provided resources for a PARS that already exists in "
-                    "config file {fn:s} but the ".format(fn=get_config_file())
-                    + "AWS resources in that PARS stack conflict with some of "
-                    "your input parameters. The conflicting parameters you "
-                    "provided were {l}".format(l=list(conflicting_params.keys()))
-                )
-
-            conf_bsr = config.get(self._pars_name, "batch-service-role")
-            conf_sfr = config.get(self._pars_name, "spot-fleet-role")
-            conf_ecsr = config.get(self._pars_name, "ecs-instance-role")
-            conf_ecsp = config.get(self._pars_name, "ecs-instance-profile")
-            conf_vpc = config.get(self._pars_name, "vpc")
-            conf_subnets = config.get(self._pars_name, "subnets")
-            conf_sg = config.get(self._pars_name, "security-group")
-
-            if not all(
-                [
-                    self._batch_service_role == conf_bsr,
-                    self._ecs_instance_role == conf_ecsr,
-                    self._ecs_instance_profile == conf_ecsp,
-                    self._spot_fleet_role == conf_sfr,
-                    self._vpc == conf_vpc,
-                    ",".join(self._subnets) == conf_subnets,
-                    self._security_group == conf_sg,
-                ]
-            ):
-                raise aws.CloudknotConfigurationError(
-                    "The resources in the CloudFormation stack do not match "
-                    "the resources in the cloudknot configuration file. "
-                    "Please try a different name."
-                )
         else:
-            # Pars doesn't exist, use input to create resources
-
-            def validated_name(role_name, fallback_suffix):
-                if not isinstance(
-                    role_name := f"{name}-{fallback_suffix}" or role_name, str
-                ):
-                    raise aws.CloudknotInputError(
-                        "If provided, role names must be strings (got a {type(role_name).__name__}) with {fallback_suffix=}."
-                    )
-                return role_name
-
-            batch_service_role_name = validated_name(
-                batch_service_role_name, "batch-service-role"
-            )
-            ecs_instance_role_name = validated_name(
-                ecs_instance_role_name, "ecs-instance-role"
-            )
-            spot_fleet_role_name = validated_name(
-                spot_fleet_role_name, "spot-fleet-role"
-            )
-
-            # Check the user supplied policies. Remove redundant entries
-
             try:
-                input_policies = (
-                    {policies} if isinstance(policies, str) else set(policies)
+                ipv4_cidr = str(
+                    ipaddress.IPv4Network(str(ipv4_cidr or "172.31.0.0/16"))
                 )
-                assert all(isinstance(p, str) for p in input_policies)
-            except (TypeError, AssertionError) as e:
+            except (ipaddress.AddressValueError, ValueError):
                 raise aws.CloudknotInputError(
-                    "Policies must be a string or a sequence of strings."
-                ) from None
-
-                # Validate policies against the available policies
-            policy_arns = []
-            policy_names = []
-            for policy in input_policies:
-                try:
-                    aws.clients.iam.get_policy(PolicyArn=policy)
-                    policy_arns.append(policy)
-                except (
-                    aws.clients.iam.exceptions.InvalidInputException,
-                    aws.clients.iam.exceptions.NoSuchEntityException,
-                    botocore.exceptions.ParamValidationError,
-                ):
-                    policy_names.append(policy)
-
-            if policy_names:
-                # Get all AWS policies
-                paginator = aws.clients.iam.get_paginator("list_policies")
-                response_iterator = paginator.paginate()
-
-                # response_iterator is a list of dicts. First convert to list of lists
-                # and then flatten to a single list
-                response_policies = [
-                    response["Policies"] for response in response_iterator
-                ]
-                policies_list = [
-                    lst for sublist in response_policies for lst in sublist
-                ]
-
-                aws_policies = {d["PolicyName"]: d["Arn"] for d in policies_list}
-
-                # If input policies are not subset of aws_policies, throw error
-
-                if bad_policies := set(policy_names) - set(aws_policies.keys()):
-                    raise aws.CloudknotInputError(
-                        f"Could not find the policies {bad_policies} on AWS."
-                    )
-                policy_arns += [aws_policies[policy] for policy in policy_names]
-
-            s3_params = aws.get_s3_params()
-            policy_list = [s3_params.policy_arn] + list(policy_arns)
-            policies = ",".join(policy_list)
-
-            if use_default_vpc:
-                if any([ipv4_cidr, instance_tenancy]):
-                    raise aws.CloudknotInputError(
-                        "if using the default VPC, you cannot specify "
-                        "`ipv4_cidr` or `instance_tenancy`."
-                    )
-
-                # Retrieve the default VPC ID
-                try:
-                    response = aws.clients.ec2.create_default_vpc()
-                    vpc_id = response.get("Vpc").get("VpcId")
-                except aws.clients.ec2.exceptions.ClientError as e:
-                    error_code = e.response.get("Error").get("Code")
-                    match error_code:
-                        case "DefaultVpcAlreadyExists":
-                            # Then use first default VPC
-                            response = aws.clients.ec2.describe_vpcs(
-                                Filters=[{"Name": "isDefault", "Values": ["true"]}]
-                            )
-                            vpc_id = response.get("Vpcs")[0].get("VpcId")
-
-                        case "UnauthorizedOperation":
-                            raise aws.CannotCreateResourceException(
-                                "Cannot create a default VPC because this is an "
-                                "unauthorized operation. You may not have the "
-                                "proper permissions to create a default VPC."
-                            ) from e
-                        case "OperationNotPermitted":
-                            raise aws.CannotCreateResourceException(
-                                "Cannot create a default VPC because this is an "
-                                "unauthorized operation. You might have resources "
-                                "in EC2-Classic in the current region."
-                            ) from e
-                        case _:
-                            raise e
-
-                # Retrieve the subnets for the default VPC
-                paginator = aws.clients.ec2.get_paginator("describe_subnets")
-                response_iterator = paginator.paginate(
-                    Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+                    f"If provided, {ipv4_cidr=} must be a valid IPv4 network range."
                 )
 
-                # response_iterator is a list of dicts. First convert to list
-                # of lists and then flatten to a single list
-                response_subnets = [
-                    response["Subnets"] for response in response_iterator
-                ]
-                subnets_list = [lst for sublist in response_subnets for lst in sublist]
-                subnet_ids = [d["SubnetId"] for d in subnets_list]
-                subnet_zones = [d["AvailabilityZone"] for d in subnets_list]
-
-                response = aws.clients.ec2.describe_availability_zones()
-                zones = [
-                    d["ZoneName"]
-                    for d in response.get("AvailabilityZones")
-                    if d["State"] == "available"
-                ]
-
-                # If this region doesn't have a subnet in each availability
-                # zone, then create the required subnets and repopulate
-                # the subnet list
-                if set(subnet_zones) < set(zones):
-                    for z in set(zones) - set(subnet_zones):
-                        aws.clients.ec2.create_default_subnet(AvailabilityZone=z)
-
-                    response_iterator = paginator.paginate(
-                        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-                    )
-
-                    # response_iterator is a list of dicts. First convert to
-                    # list of lists and then flatten to a single list
-                    response_subnets = [
-                        response["Subnets"] for response in response_iterator
-                    ]
-                    subnets_list = [
-                        lst for sublist in response_subnets for lst in sublist
-                    ]
-                    subnet_ids = [d["SubnetId"] for d in subnets_list]
-
-                template_path = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "templates",
-                        "pars-with-default-vpc.template",
-                    )
+            # Validate instance_tenancy input
+            if instance_tenancy := instance_tenancy or "default" not in {
+                "default",
+                "dedicated",
+            }:
+                raise aws.CloudknotInputError(
+                    "If provided, instance tenancy must be "
+                    'one of {"default", "dedicated"}.'
                 )
 
-                with open(template_path, "r") as fp:
-                    template_body = fp.read()
+            # Get subnet CIDR blocks
+            # Get an IPv4Network instance representing the VPC CIDR block
+            cidr = ipaddress.IPv4Network(str(ipv4_cidr))
 
-                response = aws.clients.cloudformation.create_stack(
-                    StackName=self.name + "-pars",
-                    TemplateBody=template_body,
-                    Parameters=[
-                        {
-                            "ParameterKey": "BatchServiceRoleName",
-                            "ParameterValue": batch_service_role_name,
-                        },
-                        {
-                            "ParameterKey": "EcsInstanceRoleName",
-                            "ParameterValue": ecs_instance_role_name,
-                        },
-                        {
-                            "ParameterKey": "SpotFleetRoleName",
-                            "ParameterValue": spot_fleet_role_name,
-                        },
-                        {"ParameterKey": "IamPolicies", "ParameterValue": policies},
-                        {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
-                        {
-                            "ParameterKey": "Subnets",
-                            "ParameterValue": ",".join(subnet_ids),
-                        },
-                    ],
-                    Capabilities=["CAPABILITY_NAMED_IAM"],
-                    Tags=self.tags,
+            # Get list of subnet CIDR blocks
+            if len(subnet_ipv4_cidrs := list(cidr.subnets(new_prefix=20))[:2]) < 2:
+                raise aws.CloudknotInputError(
+                    "If provided, ipv4_cidr must be large enough to "
+                    "accomodate two subnets. If you don't know what this "
+                    "means, try the default value or specify "
+                    "`use_default_vpc=True`."
                 )
 
-                self._stack_id = response["StackId"]
-
-                waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
-                waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
-
-                response = aws.clients.cloudformation.describe_stacks(
-                    StackName=self._stack_id
+            template_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "templates",
+                    "pars-with-new-vpc.template",
                 )
+            )
 
-                outs = response.get("Stacks")[0]["Outputs"]
+            with open(template_path, "r") as fp:
+                template_body = fp.read()
 
-                self._batch_service_role = _stack_out("BatchServiceRole", outs)
-                self._ecs_instance_role = _stack_out("EcsInstanceRole", outs)
-                self._spot_fleet_role = _stack_out("SpotFleetRole", outs)
-                self._ecs_instance_profile = _stack_out("InstanceProfile", outs)
-                self._vpc = _stack_out("VpcId", outs)
-                self._subnets = _stack_out("SubnetIds", outs).split(",")
-                self._security_group = _stack_out("SecurityGroupId", outs)
-            else:
-                try:
-                    ipv4_cidr = str(
-                        ipaddress.IPv4Network(str(ipv4_cidr or "172.31.0.0/16"))
-                    )
-                except (ipaddress.AddressValueError, ValueError):
-                    raise aws.CloudknotInputError(
-                        "If provided, {ipv4_cidr=} must be a valid IPv4 network range."
-                    )
+            response = aws.clients.cloudformation.create_stack(
+                StackName=self.name + "-pars",
+                TemplateBody=template_body,
+                Parameters=[
+                    {
+                        "ParameterKey": "BatchServiceRoleName",
+                        "ParameterValue": batch_service_role_name,
+                    },
+                    {
+                        "ParameterKey": "EcsInstanceRoleName",
+                        "ParameterValue": ecs_instance_role_name,
+                    },
+                    {
+                        "ParameterKey": "SpotFleetRoleName",
+                        "ParameterValue": spot_fleet_role_name,
+                    },
+                    {"ParameterKey": "IamPolicies", "ParameterValue": policies},
+                    {"ParameterKey": "VpcCidr", "ParameterValue": ipv4_cidr},
+                    {
+                        "ParameterKey": "VpcInstanceTenancy",
+                        "ParameterValue": instance_tenancy,
+                    },
+                    {
+                        "ParameterKey": "Subnet1Cidr",
+                        "ParameterValue": str(subnet_ipv4_cidrs[0]),
+                    },
+                    {
+                        "ParameterKey": "Subnet2Cidr",
+                        "ParameterValue": str(subnet_ipv4_cidrs[1]),
+                    },
+                ],
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+                Tags=self.tags,
+            )
 
-                # Validate instance_tenancy input
-                if instance_tenancy := instance_tenancy or "default" not in {
-                    "default",
-                    "dedicated",
-                }:
-                    raise aws.CloudknotInputError(
-                        "If provided, instance tenancy must be "
-                        'one of {"default", "dedicated"}.'
-                    )
+            self._stack_id = response["StackId"]
 
-                # Get subnet CIDR blocks
-                # Get an IPv4Network instance representing the VPC CIDR block
-                cidr = ipaddress.IPv4Network(str(ipv4_cidr))
+            waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
+            waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
 
-                # Get list of subnet CIDR blocks
-                if len(subnet_ipv4_cidrs := list(cidr.subnets(new_prefix=20))[:2]) < 2:
-                    raise aws.CloudknotInputError(
-                        "If provided, ipv4_cidr must be large enough to "
-                        "accomodate two subnets. If you don't know what this "
-                        "means, try the default value or specify "
-                        "`use_default_vpc=True`."
-                    )
+            response = aws.clients.cloudformation.describe_stacks(
+                StackName=self._stack_id
+            )
 
-                template_path = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "templates",
-                        "pars-with-new-vpc.template",
-                    )
-                )
+            outs = response.get("Stacks")[0]["Outputs"]
 
-                with open(template_path, "r") as fp:
-                    template_body = fp.read()
+            self._batch_service_role = _stack_out("BatchServiceRole", outs)
+            self._ecs_instance_role = _stack_out("EcsInstanceRole", outs)
+            self._spot_fleet_role = _stack_out("SpotFleetRole", outs)
+            self._ecs_instance_profile = _stack_out("InstanceProfile", outs)
+            self._vpc = _stack_out("VpcId", outs)
+            self._subnets = _stack_out("SubnetIds", outs).split(",")
+            self._security_group = _stack_out("SecurityGroupId", outs)
+        # Save the new pars resources in config object
+        # Use config.set() for python 2.7 compatibility
+        with rlock:
+            config.read(get_config_file())
+            config.add_section(self._pars_name)
+            config.set(self._pars_name, "stack-id", self._stack_id)
+            config.set(self._pars_name, "region", self.region)
+            config.set(self._pars_name, "profile", self.profile)
+            config.set(self._pars_name, "batch-service-role", self._batch_service_role)
+            config.set(self._pars_name, "ecs-instance-role", self._ecs_instance_role)
+            config.set(self._pars_name, "spot-fleet-role", self._spot_fleet_role)
+            config.set(
+                self._pars_name, "ecs-instance-profile", self._ecs_instance_profile
+            )
+            config.set(self._pars_name, "vpc", self._vpc)
+            config.set(self._pars_name, "subnets", ",".join(self._subnets))
+            config.set(self._pars_name, "security-group", self._security_group)
 
-                response = aws.clients.cloudformation.create_stack(
-                    StackName=self.name + "-pars",
-                    TemplateBody=template_body,
-                    Parameters=[
-                        {
-                            "ParameterKey": "BatchServiceRoleName",
-                            "ParameterValue": batch_service_role_name,
-                        },
-                        {
-                            "ParameterKey": "EcsInstanceRoleName",
-                            "ParameterValue": ecs_instance_role_name,
-                        },
-                        {
-                            "ParameterKey": "SpotFleetRoleName",
-                            "ParameterValue": spot_fleet_role_name,
-                        },
-                        {"ParameterKey": "IamPolicies", "ParameterValue": policies},
-                        {"ParameterKey": "VpcCidr", "ParameterValue": ipv4_cidr},
-                        {
-                            "ParameterKey": "VpcInstanceTenancy",
-                            "ParameterValue": instance_tenancy,
-                        },
-                        {
-                            "ParameterKey": "Subnet1Cidr",
-                            "ParameterValue": str(subnet_ipv4_cidrs[0]),
-                        },
-                        {
-                            "ParameterKey": "Subnet2Cidr",
-                            "ParameterValue": str(subnet_ipv4_cidrs[1]),
-                        },
-                    ],
-                    Capabilities=["CAPABILITY_NAMED_IAM"],
-                    Tags=self.tags,
-                )
+            # Save config to file
+            with open(get_config_file(), "w") as f:
+                config.write(f)
 
-                self._stack_id = response["StackId"]
-
-                waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
-                waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
-
-                response = aws.clients.cloudformation.describe_stacks(
-                    StackName=self._stack_id
-                )
-
-                outs = response.get("Stacks")[0]["Outputs"]
-
-                self._batch_service_role = _stack_out("BatchServiceRole", outs)
-                self._ecs_instance_role = _stack_out("EcsInstanceRole", outs)
-                self._spot_fleet_role = _stack_out("SpotFleetRole", outs)
-                self._ecs_instance_profile = _stack_out("InstanceProfile", outs)
-                self._vpc = _stack_out("VpcId", outs)
-                self._subnets = _stack_out("SubnetIds", outs).split(",")
-                self._security_group = _stack_out("SecurityGroupId", outs)
-
-            # Save the new pars resources in config object
-            # Use config.set() for python 2.7 compatibility
+    def _init_cf_from_config(
+        self,
+        batch_service_role_name,
+        config,
+        ecs_instance_role_name,
+        instance_tenancy,
+        ipv4_cidr,
+        name,
+        policies,
+        spot_fleet_role_name,
+    ):
+        self._region = config.get(self._pars_name, "region")
+        self._profile = config.get(self._pars_name, "profile")
+        self.check_profile_and_region()
+        mod_logger.info("Found PARS {name:s} in config".format(name=name))
+        self._stack_id = config.get(self._pars_name, "stack-id")
+        if not is_valid_stack(self._stack_id):
+            # Remove this section from the config file
             with rlock:
                 config.read(get_config_file())
-                config.add_section(self._pars_name)
-                config.set(self._pars_name, "stack-id", self._stack_id)
-                config.set(self._pars_name, "region", self.region)
-                config.set(self._pars_name, "profile", self.profile)
-                config.set(
-                    self._pars_name, "batch-service-role", self._batch_service_role
-                )
-                config.set(
-                    self._pars_name, "ecs-instance-role", self._ecs_instance_role
-                )
-                config.set(self._pars_name, "spot-fleet-role", self._spot_fleet_role)
-                config.set(
-                    self._pars_name, "ecs-instance-profile", self._ecs_instance_profile
-                )
-                config.set(self._pars_name, "vpc", self._vpc)
-                config.set(self._pars_name, "subnets", ",".join(self._subnets))
-                config.set(self._pars_name, "security-group", self._security_group)
-
-                # Save config to file
+                config.remove_section(self._pars_name)
                 with open(get_config_file(), "w") as f:
                     config.write(f)
+            raise aws.ResourceDoesNotExistException(
+                "Cloudknot found this PARS in its config file, but "
+                "the PARS stack that you requested does not exist on "
+                "AWS. Cloudknot has deleted this PARS from the config "
+                "file, so you may be able to create a new one simply "
+                "by re-running your previous command.",
+                self._stack_id,
+            )
+        response = aws.clients.cloudformation.describe_stacks(StackName=self._stack_id)
+        outs = response.get("Stacks")[0]["Outputs"]
+        self._batch_service_role = _stack_out("BatchServiceRole", outs)
+        self._ecs_instance_role = _stack_out("EcsInstanceRole", outs)
+        self._spot_fleet_role = _stack_out("SpotFleetRole", outs)
+        self._ecs_instance_profile = _stack_out("InstanceProfile", outs)
+        self._vpc = _stack_out("VpcId", outs)
+        self._subnets = _stack_out("SubnetIds", outs).split(",")
+        self._security_group = _stack_out("SecurityGroupId", outs)
+        vpc_response = aws.clients.ec2.describe_vpcs(VpcIds=[self._vpc])["Vpcs"][0]
+        stack_instance_tenancy = vpc_response["InstanceTenancy"]
+        stack_ipv4_cidr = vpc_response["CidrBlock"]
+        ecs_response = aws.clients.iam.list_attached_role_policies(
+            RoleName=self._ecs_instance_role.split("/")[-1]
+        )
+        stack_policies = {d["PolicyName"] for d in ecs_response["AttachedPolicies"]}
+        # Pars exists, check that user did not provide any conflicting
+        # resource names. This dict has values that are tuples, the first
+        # value of which is the provided input parameter in __init__
+        # and the second of which is the resource name in the AWS stack
+        input_params = {
+            "batch_service_role_name": (
+                batch_service_role_name,
+                self._batch_service_role,
+            ),
+            "ecs_instance_role_name": (
+                ecs_instance_role_name,
+                self._ecs_instance_role,
+            ),
+            "spot_fleet_role_name": (spot_fleet_role_name, self._spot_fleet_role),
+            "ipv4_cidr": (ipv4_cidr, stack_ipv4_cidr),
+            "instance_tenancy": (instance_tenancy, stack_instance_tenancy),
+        }
+        conflicting_params = {
+            k: v for k, v in input_params.items() if v[0] and v[1] != v[0]
+        }
+        # Inspect policies separately since we only require policies
+        # the input to be a subset of the stack-defined policies
+        if not set(policies) <= stack_policies:
+            conflicting_params["policies"] = (set(policies), stack_policies)
+        if conflicting_params:
+            raise aws.CloudknotInputError(
+                "You provided resources for a PARS that already exists in "
+                "config file {fn:s} but the ".format(fn=get_config_file())
+                + "AWS resources in that PARS stack conflict with some of "
+                "your input parameters. The conflicting parameters you "
+                "provided were {l}".format(l=list(conflicting_params.keys()))
+            )
+        conf_bsr = config.get(self._pars_name, "batch-service-role")
+        conf_sfr = config.get(self._pars_name, "spot-fleet-role")
+        conf_ecsr = config.get(self._pars_name, "ecs-instance-role")
+        conf_ecsp = config.get(self._pars_name, "ecs-instance-profile")
+        conf_vpc = config.get(self._pars_name, "vpc")
+        conf_subnets = config.get(self._pars_name, "subnets")
+        conf_sg = config.get(self._pars_name, "security-group")
+        if not all(
+            [
+                self._batch_service_role == conf_bsr,
+                self._ecs_instance_role == conf_ecsr,
+                self._ecs_instance_profile == conf_ecsp,
+                self._spot_fleet_role == conf_sfr,
+                self._vpc == conf_vpc,
+                ",".join(self._subnets) == conf_subnets,
+                self._security_group == conf_sg,
+            ]
+        ):
+            raise aws.CloudknotConfigurationError(
+                "The resources in the CloudFormation stack do not match "
+                "the resources in the cloudknot configuration file. "
+                "Please try a different name."
+            )
 
     @property
     def pars_name(self):
@@ -666,10 +674,10 @@ class Knot(aws.NamedObject):
         func: Optional[Callable] = None,
         image_script_path: Optional[str | bytes | os.PathLike] = None,
         image_work_dir: Optional[str | bytes | os.PathLike] = None,
-        image_github_installs: str | Iterable[str] = (),
+        image_github_installs: Collection[str] = (),
         username: Optional[str] = None,
         repo_name: Optional[str] = None,
-        image_tags: Optional[str | Iterable[str]] = None,
+        image_tags: Collection[str] = (),
         no_image_cache: bool = False,
         job_definition_name: Optional[str] = None,
         job_def_vcpus: Optional[int] = None,
@@ -677,7 +685,7 @@ class Knot(aws.NamedObject):
         n_gpus: Optional[int] = None,
         retries: Optional[int] = None,
         compute_environment_name: Optional[str] = None,
-        instance_types: Optional[str | Iterable[str]] = None,
+        instance_types: Collection[str] = (),
         min_vcpus: Optional[int] = None,
         max_vcpus: Optional[int] = None,
         desired_vcpus: Optional[int] = None,
@@ -687,7 +695,7 @@ class Knot(aws.NamedObject):
         bid_percentage: Optional[int] = None,
         job_queue_name: Optional[str] = None,
         priority: Optional[int] = None,
-        aws_resource_tags: Optional[dict | list[dict]] = None,
+        aws_resource_tags: dict | Collection[dict] = (),
     ):
         """
         Initialize a Knot instance.
@@ -696,20 +704,19 @@ class Knot(aws.NamedObject):
         ----------
         name : str, optional
             The name for this knot. Must be less than 46 characters.
-            Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
-            Default='${AWS-username}-default'
+            Must satisfy regular expression pattern r'[a-zA-Z][-a-zA-Z0-9]*'.
+            Default: ${AWS-username}-default
 
         pars : Pars, optional
-            The PARS on which to base this knot's AWS resources
-            Default: instance returned by Pars()
+            The PARS on which to base this knot's AWS resources.
+            Default: Instance returned by Pars()
 
-        pars_policies : tuple of strings
-            tuple of names of AWS policies to attach to each role
-            Default: ()
+        pars_policies : tuple[str], optional
+            Names of AWS policies to attach to each role
 
         docker_image : DockerImage, optional
-            The pre-existing DockerImage instance to adopt. i.e.,
-            you may construct your own Docker Image using
+            The pre-existing DockerImage instance to adopt. i.e., you may construct your
+            own Docker Image using
             ```
             d = cloudknot.DockerImage(*args)
             ```
@@ -718,138 +725,134 @@ class Knot(aws.NamedObject):
             knot = cloudknot.Knot(..., docker_image=d)
             ```
 
-        base_image : string
-            Docker base image on which to base this Dockerfile.
-            You may not specify both docker_image and base_image.
-            Default: None will use the python base image for the
-            current version of python
+        base_image : str, optional
+            Docker base image on which to base this Dockerfile. You may not specify
+            both `docker_image` and `base_image`.
+            Default: If `docker_image` is not provided, the Python base image for the
+            current version of python (e.g. 'python:3.10')
 
-        func : function
-            Python function to be dockerized
+        func : Callable, optional
+            Callable object or function to be dockerized
 
-        image_script_path : str
+        image_script_path : str | bytes | os.PathLike, optional
             Path to file with python script to be dockerized
 
-        image_work_dir : string
-            Directory to store Dockerfile, requirements.txt, and python
-            script with CLI
-            Default: parent directory of script if `script_path` is provided
-            else DockerImage creates a new directory, accessible by the
+        image_work_dir : str | bytes | os.PathLike, optional
+            Directory to store `Dockerfile`, `requirements.txt`, and python script with
+            CLI.
+            Default: Parent directory of script if `script_path` is provided; otherwise,
+            `DockerImage()` creates a new directory, accessible by the
             `docker_image.build_path` property.
 
-        image_github_installs : string or sequence of strings
-            Github addresses for packages to install from github rather than
-            PyPI (e.g. git://github.com/nrdg/cloudknot.git or
+        image_github_installs : str | sequence of str
+            URLs for packages to install from GitHuB rather than PyPI
+            (e.g. git://github.com/nrdg/cloudknot.git or
             git://github.com/nrdg/cloudknot.git@newfeaturebranch)
             Default: ()
 
-        username : string
-            default username created in Dockerfile and in batch job definition
+        username : str
+            Default username created in Dockerfile and in batch job definition.
             Default: 'cloudknot-user'
 
         repo_name : str, optional
-            Name of the AWS ECR repository to store the created Docker image
-            Default: return value of cloudknot.get_ecr_repo()
+            Name of the AWS ECR repository to store the created Docker image.
+            Default: cloudknot.get_ecr_repo()
 
-        image_tags : str or sequence of str
-            Tags to be applied to this Docker image
+        image_tags : str or collection of str, optional
+            Tags to be applied to this Docker image.
 
         no_image_cache : bool
-            If True, do not use image cache for Docker build. This forces a
-            rebuild of the image even if it already exists.
+            If True, do not use image cache for Docker build. This forces a rebuild of
+            the image even if it already exists.
             Default: False
 
         job_definition_name : str, optional
-            Name for this knot's AWS Batch job definition
+            Name for this knot's AWS Batch job definition.
             Default: name + '-ck-jd'
 
         job_def_vcpus : int, optional
-            number of virtual cpus to be used to this knot's job definition
+            Number of virtual cpus to be used to this knot's job definition.
             Default: 1
 
         memory : int, optional
-            memory (MiB) to be used for this knot's job definition
+            Memory (MiB) to be used for this knot's job definition.
             Default: 8000
 
         n_gpus : int, optional
-            number of GPUs to be used for this knot's job definition
+            Number of GPUs to be used for this knot's job definition.
             Default: 0
 
         retries : int, optional
-            number of times a job can be moved to 'RUNNABLE' status.
-            May be between 1 and 10
+            Number of times a job can be moved to 'RUNNABLE' status.
+            Must be from 1 to 10.
             Default: 1
 
-        compute_environment_name : str
-            Name for this knot's AWS Batch compute environment
+        compute_environment_name : str, optional
+            Name for this knot's AWS Batch compute environment.
             Default: name + '-ck-ce'
 
-        instance_types : string or sequence of strings, optional
-            Compute environment instance types
-            Default: ('optimal',)
+        instance_types : str or collection of str, optional
+            Compute environment instance types.
+            Default: "optimal"
 
-        min_vcpus : int, optional
-            minimum number of virtual cpus for instances launched in this
-            compute environment
-            Default: 0
+
+        min_vcpus : int, optional, default 0
+            Minimum number of virtual cpus for instances launched in this compute
+            environment.
 
         max_vcpus : int, optional
-            maximum number of virtual cpus for instances launched in this
-            compute environment
+            Maximum number of virtual cpus for instances launched in this compute
+            environment.
             Default: 256
 
         desired_vcpus : int, optional
-            desired number of virtual cpus for instances launched in this
-            compute environment
+            Desired number of virtual cpus for instances launched in this
+            compute environment.
             Default: 8
 
         volume_size : int, optional
-            the size (in GiB) of the Amazon EBS volumes used for
-            instances launched by AWS Batch. If not provided, cloudknot
-            will use the default Amazon ECS-optimized AMI version based
-            on Amazon Linux 1, which has an 8-GiB root volume and an
-            additional 22-GiB volume used for the Docker image. If
-            provided, cloudknot will use the ECS-optimized AMI based on
-            Amazon Linux 2 and increase the attached volume size to the
-            value of `volume_size`. If this parameter is provided, you
-            may not specify the `image_id`.
+            Size (in GiB) of the Amazon EBS volumes used for instances launched by AWS
+            Batch. If not provided, cloudknot will use the default Amazon ECS-optimized
+            AMI version based on Amazon Linux 1, which has an 8-GiB root volume and an
+            additional 22-GiB volume used for the Docker image.
+            If provided, cloudknot will use the ECS-optimized AMI based on Amazon Linux
+            2 and increase the attached volume size to the value of `volume_size`.
+            If provided, you may not specify the `image_id`.
 
-        image_id : string or None, optional
-            optional AMI id used for instances launched in this compute
-            environment
-            Default: None
+        image_id : str, optional
+            AMI id used for instances launched in this compute environment.
 
-        ec2_key_pair : string or None, optional
-            optional EC2 key pair used for instances launched in this compute
-            environment
-            Default: None
+        ec2_key_pair : str, optional
+            EC2 key pair used for instances launched in this compute environment.
 
         bid_percentage : int, optional
-            Compute environment bid percentage if using spot instances
-            Default: None, which means that on-demand instances are provisioned.
+            Compute environment bid percentage if using spot instances.
+            Default: None (provisions on-demand instances)
 
         job_queue_name : str, optional
-            Name for this knot's AWS Batch job queue
+            Name for this knot's AWS Batch job queue.
             Default: name + '-ck-jq'
 
         priority : int, optional
-            Default priority for jobs in this knot's job queue
+            Default priority for jobs in this knot's job queue.
             Default: 1
 
-        aws_resource_tags : dict or list of dicts
-            Additional AWS resource tags to apply to this repository
+        aws_resource_tags : dict or collection of dicts, optional
+            Additional AWS resource tags to apply to this repository.
         """
         # Validate name input
-        if name is not None and not isinstance(name, str):
+        if not isinstance(
+            name := aws.get_user() + "-default" if name is None else name, str
+        ):
             raise aws.CloudknotInputError(
-                "Knot name must be a string. You passed a {t!s}".format(t=type(name))
+                f"Knot name must be a string. You passed a '{type(name).__name__}'"
             )
-
-        if name is None:
             name = aws.get_user() + "-default"
 
         if len(name) > 55:
-            raise aws.CloudknotInputError("Knot name must be less than 56 characters.")
+            raise aws.CloudknotInputError(
+                "Knot name must be less than 56 characters (got {len(name)=})"
+            )
 
         super().__init__(name=name)
         self._knot_name = "knot " + name
@@ -857,7 +860,13 @@ class Knot(aws.NamedObject):
         # Validate aws_resource_tags input before creating any resources
         self._tags = aws.get_tags(name=name, additional_tags=aws_resource_tags)
 
-        image_tags = image_tags if image_tags else [name]
+        # Validate input parameters
+        try:
+            image_tags = box_iterable(image_tags or name, Iterable[str], box=list)
+        except (TypeError, ValueError):
+            raise aws.CloudknotInputError(
+                "Image tags must be strings or a sequence of str."
+            )
 
         # Check for existence of this knot in the config file
         config = configparser.ConfigParser()
@@ -908,621 +917,606 @@ class Knot(aws.NamedObject):
 
             mod_logger.info("Found knot {name:s} in config".format(name=name))
 
-            self._region = config.get(self._knot_name, "region")
-            self._profile = config.get(self._knot_name, "profile")
-            self.check_profile_and_region()
-
-            pars_name = config.get(self._knot_name, "pars")
-            self._pars = Pars(name=pars_name)
-            mod_logger.info(
-                "Knot {name:s} adopted PARS {p:s}".format(
-                    name=self.name, p=self.pars.name
-                )
+            self._init_knot_from_config(config, image_tags, no_image_cache)
+        else:
+            self._init_knot_from_input(
+                base_image,
+                bid_percentage,
+                compute_environment_name,
+                desired_vcpus,
+                docker_image,
+                ec2_key_pair,
+                func,
+                image_github_installs,
+                image_id,
+                image_script_path,
+                image_tags,
+                image_work_dir,
+                instance_types,
+                job_def_vcpus,
+                job_definition_name,
+                job_queue_name,
+                max_vcpus,
+                memory,
+                min_vcpus,
+                n_gpus,
+                name,
+                no_image_cache,
+                pars,
+                pars_policies,
+                priority,
+                repo_name,
+                retries,
+                username,
+                volume_size,
             )
 
-            image_name = config.get(self._knot_name, "docker-image")
-            self._docker_image = DockerImage(name=image_name)
-            mod_logger.info(
-                "Knot {name:s} adopted docker image {dr:s}".format(
-                    name=self.name, dr=image_name
+    def _init_knot_from_input(
+        self,
+        base_image,
+        bid_percentage,
+        compute_environment_name,
+        desired_vcpus,
+        docker_image,
+        ec2_key_pair,
+        func,
+        image_github_installs,
+        image_id,
+        image_script_path,
+        image_tags,
+        image_work_dir,
+        instance_types,
+        job_def_vcpus,
+        job_definition_name,
+        job_queue_name,
+        max_vcpus,
+        memory,
+        min_vcpus,
+        n_gpus,
+        name,
+        no_image_cache,
+        pars,
+        pars_policies,
+        priority,
+        repo_name,
+        retries,
+        username,
+        volume_size,
+    ):
+        if pars and not isinstance(pars, Pars):
+            raise aws.CloudknotInputError("if provided, pars must be a Pars instance.")
+        if docker_image and any(
+            [
+                func,
+                image_script_path,
+                image_work_dir,
+                base_image,
+                image_github_installs,
+            ]
+        ):
+            raise aws.CloudknotInputError(
+                "you gave redundant, possibly conflicting input: "
+                "`docker_image` and one of [`func`, `base_image`, "
+                "`image_script_path`, `image_work_dir`, "
+                "`image_github_installs`]"
+            )
+        if docker_image and not isinstance(docker_image, DockerImage):
+            raise aws.CloudknotInputError(
+                "docker_image must be a cloudknot DockerImage instance."
+            )
+        # Validate names for job def, job queue, and compute environment
+        job_definition_name = job_definition_name or name + "-ck-jd"
+        compute_environment_name = compute_environment_name or name + "-ck-ce"
+        job_queue_name = job_queue_name if job_queue_name else name + "-ck-jq"
+        # Validate job_def_vcpus input
+        if job_def_vcpus := int(job_def_vcpus or 1) < 1:
+            raise aws.CloudknotInputError("vcpus must be positive")
+        # Set default memory
+        try:
+            if memory := int(memory or 8000) < 1:
+                raise aws.CloudknotInputError("memory must be positive")
+        except ValueError:
+            raise aws.CloudknotInputError("memory must be an integer")
+        # Set default n_gpus
+        try:
+            if n_gpus := int(n_gpus or 0) < 0:
+                raise aws.CloudknotInputError("n_gpus must non-negative")
+        except TypeError:
+            raise aws.CloudknotInputError("n_gpus must be an integer")
+        # Validate retries input
+        try:
+            if 0 < (retries := int(retries or 1)) < 10:
+                raise aws.CloudknotInputError(f"{retries=} must be from 1 to 10")
+        except TypeError:
+            raise aws.CloudknotInputError("retries must be an integer")
+        # Validate priority
+        try:
+            if priority := int(priority or 1) < 1:
+                raise aws.CloudknotInputError(f"{priority=} must be positive")
+        except TypeError:
+            raise aws.CloudknotInputError("priority must be an integer")
+        # Set resource type, default to 'EC2' unless bid_percentage
+        # is provided
+        resource_type = "SPOT" if bid_percentage is not None else "EC2"
+        try:
+            if min_vcpus := int(min_vcpus or 0) < 0:
+                raise aws.CloudknotInputError(f"{min_vcpus=} must be non-negative")
+        except TypeError:
+            raise aws.CloudknotInputError("min_vcpus must be an integer")
+        if min_vcpus > 0:
+            mod_logger.warning(
+                f"{min_vcpus=} is greater than zero. This means that your "
+                "compute environment will maintain some EC2 vCPUs, "
+                "regardless of job demand, potentially resulting in "
+                "unnecessary AWS charges. We strongly recommend using "
+                "a compute environment with min_vcpus set to zero."
+            )
+        # Validate desired_vcpus input, default to 8
+        if desired_vcpus := int(desired_vcpus or 8) < 0:
+            raise aws.CloudknotInputError(f"{desired_vcpus=} must be " "non-negative")
+        # Validate max_vcpus, default to 256
+        max_vcpus = int(max_vcpus) if max_vcpus is not None else 256
+        if max_vcpus < 0:
+            raise aws.CloudknotInputError(f"{max_vcpus=} must be non-negative")
+        if volume_size is not None and image_id is not None:
+            raise aws.CloudknotInputError(
+                "If you provide volume_size, you cannot specify the image_id"
+            )
+        if volume_size is not None:
+            if not isinstance(volume_size, int):
+                raise aws.CloudknotInputError("volume_size must be an integer.")
+            if not volume_size > 0:
+                raise aws.CloudknotInputError("volume_size must be greater than zero.")
+        # Default instance type is 'optimal'
+        instance_types = instance_types if instance_types else ["optimal"]
+        if isinstance(instance_types, str):
+            instance_types = [instance_types]
+        elif all(isinstance(x, str) for x in instance_types):
+            instance_types = list(instance_types)
+        else:
+            raise aws.CloudknotInputError(
+                "instance_types must be a string or a sequence of str."
+            )
+        # Validate instance types
+        valid_instance_types = {"optimal"}.union(_ec2_instance_types())
+        if not set(instance_types) < valid_instance_types:
+            raise aws.CloudknotInputError(
+                "instance_types must be a subset of {types!s}".format(
+                    types=valid_instance_types
                 )
             )
+        if bid_percentage is not None:
+            bid_percentage = int(bid_percentage)
+            if bid_percentage < 0:
+                bid_percentage = 0
+            elif bid_percentage > 100:
+                bid_percentage = 100
+        # Validate image_id input
+        if image_id is not None and not isinstance(image_id, str):
+            raise aws.CloudknotInputError("if provided, image_id must be a string")
+        # Validate ec2_key_pair input
+        if ec2_key_pair is not None and not isinstance(ec2_key_pair, str):
+            raise aws.CloudknotInputError("if provided, ec2_key_pair must be a string")
 
-            if not self.docker_image.images:
-                self.docker_image.build(tags=image_tags, nocache=no_image_cache)
+        def set_pars(knot_name, input_pars, pars_policies_):
+            # Validate and set the PARS
+            if input_pars:
+                pars_ = input_pars
+
+                mod_logger.info(
+                    "knot {name:s} adopted PARS {p:s}".format(
+                        name=knot_name, p=pars_.name
+                    )
+                )
+                pars_cleanup_ = False
+            else:
+                try:
+                    pars_ = Pars(name=knot_name, policies=pars_policies_)
+                except aws.CannotCreateResourceException:
+                    pars_ = Pars(
+                        name=knot_name,
+                        policies=pars_policies_,
+                        use_default_vpc=False,
+                    )
+
+                mod_logger.info(
+                    "knot {name:s} created PARS {p:s}".format(
+                        name=knot_name, p=pars_.name
+                    )
+                )
+                pars_cleanup_ = True
+
+            return pars_, pars_cleanup_
+
+        def set_dockerimage(
+            knot_name,
+            input_docker_image,
+            func_,
+            script_path,
+            work_dir,
+            base_image_,
+            github_installs,
+            username_,
+            tags,
+            no_image_cache_,  # noqa ARG001
+            repo_name_,
+        ):
+            if input_docker_image:
+                di = input_docker_image
+
+                mod_logger.info(
+                    "Knot {name:s} adopted docker image {i:s}".format(
+                        name=knot_name, i=docker_image.name
+                    )
+                )
+            else:
+                # Create and build the docker image
+                di = DockerImage(
+                    func=func_,
+                    script_path=script_path,
+                    dir_name=work_dir,
+                    base_image=base_image_,
+                    github_installs=github_installs,
+                    username=username_,
+                )
+
+            if not di.images:
+                di.build(tags=tags, nocache=no_image_cache)
                 mod_logger.info(
                     "knot {name:s} built docker image {i!s}".format(
-                        name=self.name, i=self.docker_image.images
+                        name=knot_name, i=di.images
                     )
                 )
 
-            if self.docker_image.repo_uri is None:
-                repo_name = config.get(self._knot_name, "docker-repo")
-                self._docker_repo = aws.DockerRepo(name=repo_name)
-                mod_logger.info(
-                    "Knot {name:s} adopted docker repository {dr:s}".format(
-                        name=self.name, dr=repo_name
-                    )
-                )
+            if di.repo_uri is None:
+                # Create the remote repo
+                repo_name_ = repo_name_ if repo_name_ else aws.get_ecr_repo()
 
-                self.docker_image.push(repo=self.docker_repo)
-                mod_logger.info(
-                    "Knot {name:s} pushed docker image {dr:s}".format(
-                        name=self.name, dr=self.docker_image.name
-                    )
-                )
-            else:
-                self._docker_repo = None
-
-            self._stack_id = config.get(self._knot_name, "stack-id")
-
-            if not is_valid_stack(self._stack_id):
-                # Remove this section from the config file
-                with rlock:
-                    config.read(get_config_file())
-                    config.remove_section(self._knot_name)
-                    with open(get_config_file(), "w") as f:
-                        config.write(f)
-                raise aws.ResourceDoesNotExistException(
-                    "The Knot cloudformation stack that you requested "
-                    "does not exist. Cloudknot has deleted this Knot from "
-                    "the config file, so you may be able to create a new "
-                    "one simply by re-running your previous command.",
-                    self._stack_id,
-                )
-
-            response = aws.clients.cloudformation.describe_stacks(
-                StackName=self._stack_id
-            )
-            outs = response.get("Stacks")[0]["Outputs"]
-
-            job_def_arn = _stack_out("JobDefinition", outs)
-            response = aws.clients.batch.describe_job_definitions(
-                jobDefinitions=[job_def_arn]
-            )
-            job_def = response.get("jobDefinitions")[0]
-            job_def_name = job_def["jobDefinitionName"]
-            job_def_env = job_def["containerProperties"]["environment"]
-            bucket_env = [
-                env for env in job_def_env if env["name"] == "CLOUDKNOT_JOBS_S3_BUCKET"
-            ]
-            output_bucket = bucket_env[0]["value"] if bucket_env else None
-            job_def_retries = job_def["retryStrategy"]["attempts"]
-
-            JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
-            self._job_definition = JobDef(
-                name=job_def_name,
-                arn=job_def_arn,
-                output_bucket=output_bucket,
-                retries=job_def_retries,
-            )
-
-            self._compute_environment = _stack_out("ComputeEnvironment", outs)
-            self._job_queue = _stack_out("JobQueue", outs)
-
-            conf_jd = config.get(self._knot_name, "job-definition")
-            conf_ce = config.get(self._knot_name, "compute-environment")
-            conf_jq = config.get(self._knot_name, "job-queue")
-
-            if not all(
-                [
-                    self._job_definition.arn == conf_jd,
-                    self._compute_environment == conf_ce,
-                    self._job_queue == conf_jq,
-                ]
-            ):
-                raise aws.CloudknotConfigurationError(
-                    "The resources in the CloudFormation stack do not match "
-                    "the resources in the cloudknot configuration file. "
-                    "Please try a different name."
-                )
-
-            self._job_ids = config.get(self._knot_name, "job_ids").split()
-            self._jobs = [aws.BatchJob(job_id=jid) for jid in self.job_ids]
-        else:
-            if pars and not isinstance(pars, Pars):
-                raise aws.CloudknotInputError(
-                    "if provided, pars must be a Pars instance."
-                )
-
-            if docker_image and any(
-                [
-                    func,
-                    image_script_path,
-                    image_work_dir,
-                    base_image,
-                    image_github_installs,
-                ]
-            ):
-                raise aws.CloudknotInputError(
-                    "you gave redundant, possibly conflicting input: "
-                    "`docker_image` and one of [`func`, `base_image`, "
-                    "`image_script_path`, `image_work_dir`, "
-                    "`image_github_installs`]"
-                )
-
-            if docker_image and not isinstance(docker_image, DockerImage):
-                raise aws.CloudknotInputError(
-                    "docker_image must be a cloudknot DockerImage instance."
-                )
-
-            # Validate names for job def, job queue, and compute environment
-            job_definition_name = (
-                job_definition_name if job_definition_name else name + "-ck-jd"
-            )
-            compute_environment_name = (
-                compute_environment_name
-                if compute_environment_name
-                else name + "-ck-ce"
-            )
-            job_queue_name = job_queue_name if job_queue_name else name + "-ck-jq"
-
-            # Validate job_def_vcpus input
-            if job_def_vcpus := int(job_def_vcpus or 1) < 1:
-                raise aws.CloudknotInputError("vcpus must be positive")
-
-            # Set default memory
-            try:
-                if memory := int(memory or 8000) < 1:
-                    raise aws.CloudknotInputError("memory must be positive")
-            except ValueError:
-                raise aws.CloudknotInputError("memory must be an integer")
-
-            # Set default n_gpus
-            try:
-                if n_gpus := int(n_gpus or 0) < 0:
-                    raise aws.CloudknotInputError("n_gpus must non-negative")
-            except TypeError:
-                raise aws.CloudknotInputError("n_gpus must be an integer")
-
-            # Validate retries input
-            try:
-                if 0 < (retries := int(retries or 1)) < 10:
-                    raise aws.CloudknotInputError(f"{retries=} must be from 1 to 10")
-            except TypeError:
-                raise aws.CloudknotInputError("retries must be an integer")
-
-            # Validate priority
-            try:
-                if priority := int(priority or 1) < 1:
-                    raise aws.CloudknotInputError(f"{priority=} must be positive")
-            except TypeError:
-                raise aws.CloudknotInputError("priority must be an integer")
-
-            # Set resource type, default to 'EC2' unless bid_percentage
-            # is provided
-            resource_type = "SPOT" if bid_percentage is not None else "EC2"
-
-            try:
-                if min_vcpus := int(min_vcpus or 0) < 0:
-                    raise aws.CloudknotInputError(f"{min_vcpus=} must be non-negative")
-            except TypeError:
-                raise aws.CloudknotInputError("min_vcpus must be an integer")
-
-            if min_vcpus > 0:
-                mod_logger.warning(
-                    f"{min_vcpus=} is greater than zero. This means that your "
-                    "compute environment will maintain some EC2 vCPUs, "
-                    "regardless of job demand, potentially resulting in "
-                    "unnecessary AWS charges. We strongly recommend using "
-                    "a compute environment with min_vcpus set to zero."
-                )
-
-            # Validate desired_vcpus input, default to 8
-            if desired_vcpus := int(desired_vcpus or 8) < 0:
-                raise aws.CloudknotInputError(
-                    f"{desired_vcpus=} must be " "non-negative"
-                )
-
-            # Validate max_vcpus, default to 256
-            max_vcpus = int(max_vcpus) if max_vcpus is not None else 256
-            if max_vcpus < 0:
-                raise aws.CloudknotInputError(f"{max_vcpus=} must be non-negative")
-
-            if volume_size is not None and image_id is not None:
-                raise aws.CloudknotInputError(
-                    "If you provide volume_size, you cannot specify the image_id"
-                )
-
-            if volume_size is not None:
-                if not isinstance(volume_size, int):
-                    raise aws.CloudknotInputError("volume_size must be an integer.")
-                if not volume_size > 0:
-                    raise aws.CloudknotInputError(
-                        "volume_size must be greater than zero."
-                    )
-
-            # Default instance type is 'optimal'
-            instance_types = instance_types if instance_types else ["optimal"]
-            if isinstance(instance_types, str):
-                instance_types = [instance_types]
-            elif all(isinstance(x, str) for x in instance_types):
-                instance_types = list(instance_types)
-            else:
-                raise aws.CloudknotInputError(
-                    "instance_types must be a string or a sequence of strings."
-                )
-
-            # Validate instance types
-            valid_instance_types = {"optimal"}.union(_ec2_instance_types())
-
-            if not set(instance_types) < valid_instance_types:
-                raise aws.CloudknotInputError(
-                    "instance_types must be a subset of {types!s}".format(
-                        types=valid_instance_types
-                    )
-                )
-
-            if bid_percentage is not None:
-                bid_percentage = int(bid_percentage)
-                if bid_percentage < 0:
-                    bid_percentage = 0
-                elif bid_percentage > 100:
-                    bid_percentage = 100
-
-            # Validate image_id input
-            if image_id is not None and not isinstance(image_id, str):
-                raise aws.CloudknotInputError("if provided, image_id must be a string")
-
-            # Validate ec2_key_pair input
-            if ec2_key_pair is not None and not isinstance(ec2_key_pair, str):
-                raise aws.CloudknotInputError(
-                    "if provided, ec2_key_pair must be a string"
-                )
-
-            def set_pars(knot_name, input_pars, pars_policies_):
-                # Validate and set the PARS
-                if input_pars:
-                    pars_ = input_pars
-
-                    mod_logger.info(
-                        "knot {name:s} adopted PARS {p:s}".format(
-                            name=knot_name, p=pars_.name
-                        )
-                    )
-                    pars_cleanup_ = False
-                else:
-                    try:
-                        pars_ = Pars(name=knot_name, policies=pars_policies_)
-                    except aws.CannotCreateResourceException:
-                        pars_ = Pars(
-                            name=knot_name,
-                            policies=pars_policies_,
-                            use_default_vpc=False,
-                        )
-
-                    mod_logger.info(
-                        "knot {name:s} created PARS {p:s}".format(
-                            name=knot_name, p=pars_.name
-                        )
-                    )
-                    pars_cleanup_ = True
-
-                return pars_, pars_cleanup_
-
-            def set_dockerimage(
-                knot_name,
-                input_docker_image,
-                func_,
-                script_path,
-                work_dir,
-                base_image_,
-                github_installs,
-                username_,
-                tags,
-                no_image_cache_,  # noqa ARG001
-                repo_name_,
-            ):
-                if input_docker_image:
-                    di = input_docker_image
-
-                    mod_logger.info(
-                        "Knot {name:s} adopted docker image {i:s}".format(
-                            name=knot_name, i=docker_image.name
-                        )
-                    )
-                else:
-                    # Create and build the docker image
-                    di = DockerImage(
-                        func=func_,
-                        script_path=script_path,
-                        dir_name=work_dir,
-                        base_image=base_image_,
-                        github_installs=github_installs,
-                        username=username_,
-                    )
-
-                if not di.images:
-                    di.build(tags=tags, nocache=no_image_cache)
-                    mod_logger.info(
-                        "knot {name:s} built docker image {i!s}".format(
-                            name=knot_name, i=di.images
-                        )
-                    )
-
-                if di.repo_uri is None:
-                    # Create the remote repo
-                    repo_name_ = repo_name_ if repo_name_ else aws.get_ecr_repo()
-
-                    # Later in __init__, we may abort this init because of
-                    # inconsistent job def, compute env, or job queue
-                    # parameters. If we do that, we don't want to leave a
-                    # bunch of newly created resources around so keep track of
-                    # whether this repo was created or adopted.
-                    if config.has_option("docker-repos", repo_name_):
-                        # Pre-existing repo, no cleanup necessary
-                        repo_cleanup_ = False
-                    elif repo_name_ == aws.get_ecr_repo():
-                        repo_cleanup_ = False
-                    else:
-                        # Freshly created repo, cleanup necessary
-                        repo_cleanup_ = True
-
-                    dr = aws.DockerRepo(name=repo_name_)
-
-                    mod_logger.info(
-                        "knot {name:s} created/adopted docker repo {r:s}".format(
-                            name=knot_name, r=dr.name
-                        )
-                    )
-
-                    # Push to remote repo
-                    di.push(repo=dr)
-
-                    mod_logger.info(
-                        "knot {name:s} pushed it's docker image to the repo "
-                        "{r:s}".format(name=knot_name, r=dr.name)
-                    )
-                else:
+                # Later in __init__, we may abort this init because of
+                # inconsistent job def, compute env, or job queue
+                # parameters. If we do that, we don't want to leave a
+                # bunch of newly created resources around so keep track of
+                # whether this repo was created or adopted.
+                if config.has_option("docker-repos", repo_name_):
+                    # Pre-existing repo, no cleanup necessary
                     repo_cleanup_ = False
-                    dr = None
-
-                return di, dr, repo_cleanup_
-
-            # Set default username
-            username = str(username) if username else "cloudknot-user"
-
-            executor = ThreadPoolExecutor(3)
-            futures = {
-                "pars": executor.submit(
-                    set_pars,
-                    knot_name=self.name,
-                    input_pars=pars,
-                    pars_policies_=pars_policies,
-                ),
-                "docker-image": executor.submit(
-                    set_dockerimage,
-                    knot_name=self.name,
-                    input_docker_image=docker_image,
-                    func_=func,
-                    script_path=image_script_path,
-                    work_dir=image_work_dir,
-                    base_image_=base_image,
-                    github_installs=image_github_installs,
-                    username_=username,
-                    tags=image_tags,
-                    no_image_cache_=no_image_cache,
-                    repo_name_=repo_name,
-                ),
-            }
-
-            self._pars, pars_cleanup = futures["pars"].result()
-
-            self._docker_image, self._docker_repo, repo_cleanup = futures[
-                "docker-image"
-            ].result()
-
-            executor.shutdown()
-
-            repo_uri = self.docker_image.repo_uri
-            output_bucket = aws.get_s3_params().bucket
-
-            response = aws.clients.cloudformation.describe_stacks(
-                StackName=self.pars.stack_id
-            )
-            pars_stack_name = response.get("Stacks")[0]["StackName"]
-
-            params = [
-                {"ParameterKey": "ParsStackName", "ParameterValue": pars_stack_name},
-                {"ParameterKey": "DockerImage", "ParameterValue": repo_uri},
-                {"ParameterKey": "JdName", "ParameterValue": job_definition_name},
-                {"ParameterKey": "JdvCpus", "ParameterValue": str(job_def_vcpus)},
-                {"ParameterKey": "JdMemory", "ParameterValue": str(memory)},
-                {"ParameterKey": "JdGpus", "ParameterValue": str(n_gpus)},
-                {"ParameterKey": "JdUser", "ParameterValue": username},
-                {"ParameterKey": "JdOutputBucket", "ParameterValue": output_bucket},
-                {"ParameterKey": "JdRetries", "ParameterValue": str(retries)},
-                {"ParameterKey": "JqName", "ParameterValue": job_queue_name},
-                {"ParameterKey": "JqPriority", "ParameterValue": str(priority)},
-                {"ParameterKey": "CeName", "ParameterValue": compute_environment_name},
-                {"ParameterKey": "CeResourceType", "ParameterValue": resource_type},
-                {"ParameterKey": "CeMinvCpus", "ParameterValue": str(min_vcpus)},
-                {"ParameterKey": "CeTagNameValue", "ParameterValue": self.name},
-                {"ParameterKey": "CeTagOwnerValue", "ParameterValue": aws.get_user()},
-                {
-                    "ParameterKey": "CeTagEnvironmentValue",
-                    "ParameterValue": "cloudknot",
-                },
-                {
-                    "ParameterKey": "CeDesiredvCpus",
-                    "ParameterValue": str(desired_vcpus),
-                },
-                {"ParameterKey": "CeMaxvCpus", "ParameterValue": str(max_vcpus)},
-                {
-                    "ParameterKey": "CeInstanceTypes",
-                    "ParameterValue": ",".join(instance_types),
-                },
-            ]
-
-            if resource_type == "SPOT":
-                params.append(
-                    {
-                        "ParameterKey": "CeBidPercentage",
-                        "ParameterValue": str(bid_percentage),
-                    }
-                )
-
-            if image_id is not None:
-                params.append({"ParameterKey": "CeAmiId", "ParameterValue": image_id})
-
-            if ec2_key_pair is not None:
-                params.append(
-                    {
-                        "ParameterKey": "CeEc2KeyPair",
-                        "ParameterValue": ec2_key_pair,
-                    }
-                )
-
-            if volume_size is not None:
-                params.append(
-                    {
-                        "ParameterKey": "LtVolumeSize",
-                        "ParameterValue": str(volume_size),
-                    }
-                )
-                params.append(
-                    {
-                        "ParameterKey": "LtName",
-                        "ParameterValue": name + "-ck-lt",
-                    }
-                )
-
-                # Set the image id to use the ECS-optimized Amazon Linux
-                # 2 image
-
-                # First, determine if we're running in moto for CI
-                # by retrieving the account ID
-                user = aws.clients.iam.get_user()["User"]
-                account_id = user["Arn"].split(":")[4]
-                if account_id == "123456789012":
-                    response = aws.clients.ec2.describe_images()
+                elif repo_name_ == aws.get_ecr_repo():
+                    repo_cleanup_ = False
                 else:
-                    response = aws.clients.ec2.describe_images(Owners=["amazon"])
+                    # Freshly created repo, cleanup necessary
+                    repo_cleanup_ = True
 
-                ecs_optimized_images = sorted(
-                    [
-                        image
-                        for image in response["Images"]
-                        if image.get("Description") is not None
-                        and "amazon linux ami 2" in image["Description"].lower()
-                        and "x86_64 ecs hvm gp2" in image["Description"].lower()
-                        and "gpu" not in image["Name"].lower()
-                        and len(image["BlockDeviceMappings"]) == 1
-                    ],
-                    key=lambda image: image["CreationDate"],
-                    reverse=True,
-                )
-                image_id = ecs_optimized_images[0]["ImageId"]
+                dr = aws.DockerRepo(name=repo_name_)
 
-                params.append({"ParameterKey": "CeAmiId", "ParameterValue": image_id})
-
-                template_path = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "templates",
-                        "batch-environment-increase-ebs-volume.template",
+                mod_logger.info(
+                    "knot {name:s} created/adopted docker repo {r:s}".format(
+                        name=knot_name, r=dr.name
                     )
+                )
+
+                # Push to remote repo
+                di.push(repo=dr)
+
+                mod_logger.info(
+                    "knot {name:s} pushed it's docker image to the repo "
+                    "{r:s}".format(name=knot_name, r=dr.name)
                 )
             else:
-                template_path = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "templates",
-                        "batch-environment.template",
-                    )
-                )
+                repo_cleanup_ = False
+                dr = None
 
-            if n_gpus > 0:
-                template_path = template_path.replace(
-                    "batch-environment-", "batch-environment-gpu-"
-                )
+            return di, dr, repo_cleanup_
 
-            with open(template_path, "r") as fp:
-                template_body = fp.read()
-
-            response = aws.clients.cloudformation.create_stack(
-                StackName=self.name + "-knot",
-                TemplateBody=template_body,
-                Parameters=params,
-                Capabilities=["CAPABILITY_NAMED_IAM"],
-                Tags=self.tags,
+        # Set default username
+        username = str(username) if username else "cloudknot-user"
+        executor = ThreadPoolExecutor(3)
+        futures = {
+            "pars": executor.submit(
+                set_pars,
+                knot_name=self.name,
+                input_pars=pars,
+                pars_policies_=pars_policies,
+            ),
+            "docker-image": executor.submit(
+                set_dockerimage,
+                knot_name=self.name,
+                input_docker_image=docker_image,
+                func_=func,
+                script_path=image_script_path,
+                work_dir=image_work_dir,
+                base_image_=base_image,
+                github_installs=image_github_installs,
+                username_=username,
+                tags=image_tags,
+                no_image_cache_=no_image_cache,
+                repo_name_=repo_name,
+            ),
+        }
+        self._pars, pars_cleanup = futures["pars"].result()
+        self._docker_image, self._docker_repo, repo_cleanup = futures[
+            "docker-image"
+        ].result()
+        executor.shutdown()
+        repo_uri = self.docker_image.repo_uri
+        output_bucket = aws.get_s3_params().bucket
+        response = aws.clients.cloudformation.describe_stacks(
+            StackName=self.pars.stack_id
+        )
+        pars_stack_name = response.get("Stacks")[0]["StackName"]
+        params = [
+            {"ParameterKey": "ParsStackName", "ParameterValue": pars_stack_name},
+            {"ParameterKey": "DockerImage", "ParameterValue": repo_uri},
+            {"ParameterKey": "JdName", "ParameterValue": job_definition_name},
+            {"ParameterKey": "JdvCpus", "ParameterValue": str(job_def_vcpus)},
+            {"ParameterKey": "JdMemory", "ParameterValue": str(memory)},
+            {"ParameterKey": "JdGpus", "ParameterValue": str(n_gpus)},
+            {"ParameterKey": "JdUser", "ParameterValue": username},
+            {"ParameterKey": "JdOutputBucket", "ParameterValue": output_bucket},
+            {"ParameterKey": "JdRetries", "ParameterValue": str(retries)},
+            {"ParameterKey": "JqName", "ParameterValue": job_queue_name},
+            {"ParameterKey": "JqPriority", "ParameterValue": str(priority)},
+            {"ParameterKey": "CeName", "ParameterValue": compute_environment_name},
+            {"ParameterKey": "CeResourceType", "ParameterValue": resource_type},
+            {"ParameterKey": "CeMinvCpus", "ParameterValue": str(min_vcpus)},
+            {"ParameterKey": "CeTagNameValue", "ParameterValue": self.name},
+            {"ParameterKey": "CeTagOwnerValue", "ParameterValue": aws.get_user()},
+            {
+                "ParameterKey": "CeTagEnvironmentValue",
+                "ParameterValue": "cloudknot",
+            },
+            {
+                "ParameterKey": "CeDesiredvCpus",
+                "ParameterValue": str(desired_vcpus),
+            },
+            {"ParameterKey": "CeMaxvCpus", "ParameterValue": str(max_vcpus)},
+            {
+                "ParameterKey": "CeInstanceTypes",
+                "ParameterValue": ",".join(instance_types),
+            },
+        ]
+        if resource_type == "SPOT":
+            params.append(
+                {
+                    "ParameterKey": "CeBidPercentage",
+                    "ParameterValue": str(bid_percentage),
+                }
+            )
+        if image_id is not None:
+            params.append({"ParameterKey": "CeAmiId", "ParameterValue": image_id})
+        if ec2_key_pair is not None:
+            params.append(
+                {
+                    "ParameterKey": "CeEc2KeyPair",
+                    "ParameterValue": ec2_key_pair,
+                }
+            )
+        if volume_size is not None:
+            params.append(
+                {
+                    "ParameterKey": "LtVolumeSize",
+                    "ParameterValue": str(volume_size),
+                }
+            )
+            params.append(
+                {
+                    "ParameterKey": "LtName",
+                    "ParameterValue": name + "-ck-lt",
+                }
             )
 
-            self._stack_id = response["StackId"]
-            waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
-            waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
+            # Set the image id to use the ECS-optimized Amazon Linux
+            # 2 image
 
-            response = aws.clients.cloudformation.describe_stacks(
-                StackName=self._stack_id
-            )
+            # First, determine if we're running in moto for CI
+            # by retrieving the account ID
+            user = aws.clients.iam.get_user()["User"]
+            account_id = user["Arn"].split(":")[4]
+            if account_id == "123456789012":
+                response = aws.clients.ec2.describe_images()
+            else:
+                response = aws.clients.ec2.describe_images(Owners=["amazon"])
 
-            outs = response.get("Stacks")[0]["Outputs"]
-
-            job_def_arn = _stack_out("JobDefinition", outs)
-            response = aws.clients.batch.describe_job_definitions(
-                jobDefinitions=[job_def_arn]
-            )
-            job_def = response.get("jobDefinitions")[0]
-            job_def_name = job_def["jobDefinitionName"]
-            job_def_env = job_def["containerProperties"]["environment"]
-            bucket_env = [
-                e for e in job_def_env if e["name"] == "CLOUDKNOT_JOBS_S3_BUCKET"
-            ]
-            job_def_output_bucket = bucket_env[0]["value"] if bucket_env else None
-            job_def_retries = job_def["retryStrategy"]["attempts"]
-
-            if not all(
+            ecs_optimized_images = sorted(
                 [
-                    job_def_output_bucket == output_bucket,
-                    job_def_retries == retries,
-                ]
-            ):
-                raise aws.CloudknotConfigurationError(
-                    "The job definition parameters in the AWS CloudFormation "
-                    "stack do not match the input parameters."
-                )
+                    image
+                    for image in response["Images"]
+                    if image.get("Description") is not None
+                    and "amazon linux ami 2" in image["Description"].lower()
+                    and "x86_64 ecs hvm gp2" in image["Description"].lower()
+                    and "gpu" not in image["Name"].lower()
+                    and len(image["BlockDeviceMappings"]) == 1
+                ],
+                key=lambda image: image["CreationDate"],
+                reverse=True,
+            )
+            image_id = ecs_optimized_images[0]["ImageId"]
 
-            JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
-            self._job_definition = JobDef(
-                name=job_def_name,
-                arn=job_def_arn,
-                output_bucket=output_bucket,
-                retries=retries,
+            params.append({"ParameterKey": "CeAmiId", "ParameterValue": image_id})
+
+            template_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "templates",
+                    "batch-environment-increase-ebs-volume.template",
+                )
+            )
+        else:
+            template_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "templates",
+                    "batch-environment.template",
+                )
+            )
+        if n_gpus > 0:
+            template_path = template_path.replace(
+                "batch-environment-", "batch-environment-gpu-"
+            )
+        with open(template_path, "r") as fp:
+            template_body = fp.read()
+        response = aws.clients.cloudformation.create_stack(
+            StackName=self.name + "-knot",
+            TemplateBody=template_body,
+            Parameters=params,
+            Capabilities=["CAPABILITY_NAMED_IAM"],
+            Tags=self.tags,
+        )
+        self._stack_id = response["StackId"]
+        waiter = aws.clients.cloudformation.get_waiter("stack_create_complete")
+        waiter.wait(StackName=self._stack_id, WaiterConfig={"Delay": 10})
+        response = aws.clients.cloudformation.describe_stacks(StackName=self._stack_id)
+        outs = response.get("Stacks")[0]["Outputs"]
+        job_def_arn = _stack_out("JobDefinition", outs)
+        response = aws.clients.batch.describe_job_definitions(
+            jobDefinitions=[job_def_arn]
+        )
+        job_def = response.get("jobDefinitions")[0]
+        job_def_name = job_def["jobDefinitionName"]
+        job_def_env = job_def["containerProperties"]["environment"]
+        bucket_env = [e for e in job_def_env if e["name"] == "CLOUDKNOT_JOBS_S3_BUCKET"]
+        job_def_output_bucket = bucket_env[0]["value"] if bucket_env else None
+        job_def_retries = job_def["retryStrategy"]["attempts"]
+        if not all(
+            [
+                job_def_output_bucket == output_bucket,
+                job_def_retries == retries,
+            ]
+        ):
+            raise aws.CloudknotConfigurationError(
+                "The job definition parameters in the AWS CloudFormation "
+                "stack do not match the input parameters."
+            )
+        JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
+        self._job_definition = JobDef(
+            name=job_def_name,
+            arn=job_def_arn,
+            output_bucket=output_bucket,
+            retries=retries,
+        )
+        self._compute_environment = _stack_out("ComputeEnvironment", outs)
+        self._job_queue = _stack_out("JobQueue", outs)
+        self._jobs = []
+        self._job_ids = []
+        # Save the new Knot resources in config object
+        # Use config.set() for python 2.7 compatibility
+        config = configparser.ConfigParser()
+        with rlock:
+            config.read(get_config_file())
+            config.add_section(self._knot_name)
+            config.set(self._knot_name, "region", self.region)
+            config.set(self._knot_name, "profile", self.profile)
+            config.set(self._knot_name, "stack-id", self.stack_id)
+            config.set(self._knot_name, "pars", self.pars.name)
+            config.set(self._knot_name, "docker-image", self.docker_image.name)
+            config.set(
+                self._knot_name,
+                "docker-repo",
+                self.docker_repo.name if self.docker_repo else "None",
+            )
+            config.set(self._knot_name, "job-definition", self.job_definition.arn)
+            config.set(self._knot_name, "compute-environment", self.compute_environment)
+            config.set(self._knot_name, "job-queue", self.job_queue)
+            config.set(self._knot_name, "job_ids", "")
+
+            # Save config to file
+            with open(get_config_file(), "w") as f:
+                config.write(f)
+
+    def _init_knot_from_config(self, config, image_tags, no_image_cache):
+        self._region = config.get(self._knot_name, "region")
+        self._profile = config.get(self._knot_name, "profile")
+        self.check_profile_and_region()
+        pars_name = config.get(self._knot_name, "pars")
+        self._pars = Pars(name=pars_name)
+        mod_logger.info(
+            "Knot {name:s} adopted PARS {p:s}".format(name=self.name, p=self.pars.name)
+        )
+        image_name = config.get(self._knot_name, "docker-image")
+        self._docker_image = DockerImage(name=image_name)
+        mod_logger.info(
+            "Knot {name:s} adopted docker image {dr:s}".format(
+                name=self.name, dr=image_name
+            )
+        )
+        if not self.docker_image.images:
+            self.docker_image.build(tags=image_tags, nocache=no_image_cache)
+            mod_logger.info(
+                "knot {name:s} built docker image {i!s}".format(
+                    name=self.name, i=self.docker_image.images
+                )
+            )
+        if self.docker_image.repo_uri is None:
+            repo_name = config.get(self._knot_name, "docker-repo")
+            self._docker_repo = aws.DockerRepo(name=repo_name)
+            mod_logger.info(
+                "Knot {name:s} adopted docker repository {dr:s}".format(
+                    name=self.name, dr=repo_name
+                )
             )
 
-            self._compute_environment = _stack_out("ComputeEnvironment", outs)
-            self._job_queue = _stack_out("JobQueue", outs)
-
-            self._jobs = []
-            self._job_ids = []
-
-            # Save the new Knot resources in config object
-            # Use config.set() for python 2.7 compatibility
-            config = configparser.ConfigParser()
-
+            self.docker_image.push(repo=self.docker_repo)
+            mod_logger.info(
+                "Knot {name:s} pushed docker image {dr:s}".format(
+                    name=self.name, dr=self.docker_image.name
+                )
+            )
+        else:
+            self._docker_repo = None
+        self._stack_id = config.get(self._knot_name, "stack-id")
+        if not is_valid_stack(self._stack_id):
+            # Remove this section from the config file
             with rlock:
                 config.read(get_config_file())
-                config.add_section(self._knot_name)
-                config.set(self._knot_name, "region", self.region)
-                config.set(self._knot_name, "profile", self.profile)
-                config.set(self._knot_name, "stack-id", self.stack_id)
-                config.set(self._knot_name, "pars", self.pars.name)
-                config.set(self._knot_name, "docker-image", self.docker_image.name)
-                config.set(
-                    self._knot_name,
-                    "docker-repo",
-                    self.docker_repo.name if self.docker_repo else "None",
-                )
-                config.set(self._knot_name, "job-definition", self.job_definition.arn)
-                config.set(
-                    self._knot_name, "compute-environment", self.compute_environment
-                )
-                config.set(self._knot_name, "job-queue", self.job_queue)
-                config.set(self._knot_name, "job_ids", "")
-
-                # Save config to file
+                config.remove_section(self._knot_name)
                 with open(get_config_file(), "w") as f:
                     config.write(f)
+            raise aws.ResourceDoesNotExistException(
+                "The Knot cloudformation stack that you requested "
+                "does not exist. Cloudknot has deleted this Knot from "
+                "the config file, so you may be able to create a new "
+                "one simply by re-running your previous command.",
+                self._stack_id,
+            )
+        response = aws.clients.cloudformation.describe_stacks(StackName=self._stack_id)
+        outs = response.get("Stacks")[0]["Outputs"]
+        job_def_arn = _stack_out("JobDefinition", outs)
+        response = aws.clients.batch.describe_job_definitions(
+            jobDefinitions=[job_def_arn]
+        )
+        job_def = response.get("jobDefinitions")[0]
+        job_def_name = job_def["jobDefinitionName"]
+        job_def_env = job_def["containerProperties"]["environment"]
+        bucket_env = [
+            env for env in job_def_env if env["name"] == "CLOUDKNOT_JOBS_S3_BUCKET"
+        ]
+        output_bucket = bucket_env[0]["value"] if bucket_env else None
+        job_def_retries = job_def["retryStrategy"]["attempts"]
+        JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
+        self._job_definition = JobDef(
+            name=job_def_name,
+            arn=job_def_arn,
+            output_bucket=output_bucket,
+            retries=job_def_retries,
+        )
+        self._compute_environment = _stack_out("ComputeEnvironment", outs)
+        self._job_queue = _stack_out("JobQueue", outs)
+        conf_jd = config.get(self._knot_name, "job-definition")
+        conf_ce = config.get(self._knot_name, "compute-environment")
+        conf_jq = config.get(self._knot_name, "job-queue")
+        if not all(
+            [
+                self._job_definition.arn == conf_jd,
+                self._compute_environment == conf_ce,
+                self._job_queue == conf_jq,
+            ]
+        ):
+            raise aws.CloudknotConfigurationError(
+                "The resources in the CloudFormation stack do not match "
+                "the resources in the cloudknot configuration file. "
+                "Please try a different name."
+            )
+        self._job_ids = config.get(self._knot_name, "job_ids").split()
+        self._jobs = [aws.BatchJob(job_id=jid) for jid in self.job_ids]
 
     # Declare read-only properties
     @property
@@ -1584,8 +1578,13 @@ class Knot(aws.NamedObject):
         return self._job_ids
 
     def map(
-        self, iterdata, env_vars=None, max_threads=64, starmap=False, job_type=None
-    ):
+        self,
+        iterdata: Collection,
+        env_vars: Optional[list[dict]] = None,
+        max_threads: int = 64,
+        starmap: bool = False,
+        job_type: Optional[str] = None,
+    ) -> Future | list[Future]:
         """Submit batch jobs for a range of commands and environment vars.
 
         Each item of `iterdata` is assumed to be a single input for the
@@ -1598,14 +1597,13 @@ class Knot(aws.NamedObject):
 
         Parameters
         ----------
-        iterdata :
-            An iteratable of input data
+        iterdata : Collection
+            A collection of input data
 
-        env_vars : sequence of dicts
+        env_vars : list[dict], optional
             Additional environment variables for the Batch environment
             Each dict must have only 'name' and 'value' keys. The same
             environment variables are applied for each item in `iterdata`.
-            Default: None
 
         max_threads : int
             Maximum number of threads used to invoke.
@@ -1618,28 +1616,26 @@ class Knot(aws.NamedObject):
             have not been "pre-zipped". Then the behavior is similar to
             python's built-in `map()` method.
 
-        job_type : string, 'array' or 'independent'
+        job_type : str, optional, {'array', 'independent'}
             Type of batch job to submit. If 'array', then an array job is
-            submitted (see
-            https://docs.aws.amazon.com/batch/latest/userguide/array_jobs.html)
+            submitted (see https://docs.aws.amazon.com/batch/latest/userguide/array_jobs.html)
             with one child job for each input element and map returns one
             future for the entire results list. If job_type is 'independent'
             then one independent batch job is submitted for each input
             element and map returns a list of futures for each element of the
-            results. If the length of ``iterdata`` is one and job_type is
-            specified, it must be "independent."
+            results. If the length of `iterdata` is one and job_type is
+            specified, it must be 'independent.'
             Default: 'array'
 
         Returns
         -------
-        map : future or list of futures
-            If `job_type` is 'array', a future for the list of results.
-            If `job_type` is 'independent', list of futures for each job
+        map : Future | list[Future]
+            If `job_type` is 'array', a `Future` for the list of results.
+            If `job_type` is 'independent', list of `Future`s for each job
         """
-        if job_type is None:
-            job_type = "independent" if len(iterdata) == 1 else "array"
-
-        if job_type not in {"array", "independent"}:
+        if (
+            job_type := job_type or ("independent" if len(iterdata) == 1 else "array")
+        ) not in {"independent", "array"}:
             raise ValueError("`job_type` must be 'array' or 'independent'.")
 
         if self.clobbered:
@@ -1649,18 +1645,22 @@ class Knot(aws.NamedObject):
 
         self.check_profile_and_region()
 
-        if not isinstance(iterdata, Iterable):
-            raise TypeError("iterdata must be an iterable.")
+        if not isinstance(iterdata, Collection):
+            raise TypeError(
+                "`iterdata` must be an Collection with __len__ and __iter__"
+            )
 
         # env_vars should be a sequence of sequences of dicts
-        if env_vars and not all(isinstance(s, dict) for s in env_vars):
-            raise aws.CloudknotInputError("env_vars must be a sequence of dicts")
-
-        # and each dict should have only 'name' and 'value' keys
-        if env_vars and not all(set(d.keys()) == {"name", "value"} for d in env_vars):
-            raise aws.CloudknotInputError(
-                "each dict in env_vars must have " 'keys "name" and "value"'
-            )
+        for ed in (env_vars := env_vars or ()):
+            if not isinstance(ed, dict):
+                raise aws.CloudknotInputError(
+                    "`env_vars` must be a collection of `dict`s"
+                )
+            for k in ed:
+                if k not in {"name", "value"}:
+                    raise aws.CloudknotInputError(
+                        f"each `dict` in `env_vars` should only have keys 'name' and 'value' (got key {k} in {ed})"
+                    )
 
         these_jobs = []
 
@@ -1720,7 +1720,7 @@ class Knot(aws.NamedObject):
         if job_type == "independent":
             return futures
 
-        return futures[0]
+        return futures[0] if futures else []
 
     def view_jobs(self):
         """Print the job_id, name, and status of all jobs in self.jobs."""
@@ -1752,20 +1752,25 @@ class Knot(aws.NamedObject):
         for job in sorted_jobs:
             print(fmt.format(**job))
 
-    def clobber(self, clobber_pars=False, clobber_repo=False, clobber_image=False):
+    def clobber(
+        self,
+        clobber_pars: bool = False,
+        clobber_repo: bool = False,
+        clobber_image: bool = False,
+    ):
         """Delete associated AWS resources and remove section from config.
 
         Parameters
         ----------
-        clobber_pars : boolean
+        clobber_pars : bool
             If true, clobber the associated Pars instance
             Default: False
 
-        clobber_repo : boolean
+        clobber_repo : bool
             If true, clobber the associated DockerRepo instance
             Default: False
 
-        clobber_image : boolean
+        clobber_image : bool
             If true, clobber the associated DockerImage instance
             Default: False
         """
@@ -1785,32 +1790,31 @@ class Knot(aws.NamedObject):
         aws.clients.cloudformation.delete_stack(StackName=self._stack_id)
 
         if clobber_repo:
-            dr = self.docker_repo
-            if dr and dr.name != aws.get_ecr_repo():
+            if self.docker_repo and self.docker_repo.name != aws.get_ecr_repo():
                 # if the docker repo instance exists and it is not the
                 # default cloudknot ECR repo, then clobber it
                 self.docker_repo.clobber()
-            else:
-                # Either the repo instance is unavailable or this is in
-                # the default cloudknot ECR repo.
-                uri = self.docker_image.repo_uri
-                repo_name = uri.split("amazonaws.com/")[-1].split(":")[0]
-                if repo_name == aws.get_ecr_repo():
-                    # This is in the default ECR repo. So just delete the
-                    # image from the remote repo, leaving other images
-                    # untouched.
-                    registry_id = uri.split(".")[0]
-                    tag = uri.split(":")[-1]
+            elif (
+                repo_name := self.docker_image.repo_uri.split("amazonaws.com/")[
+                    -1
+                ].split(":")[0]
+                == aws.get_ecr_repo()
+            ):
+                # This is in the default ECR repo. So just delete the
+                # image from the remote repo, leaving other images
+                # untouched.
+                registry_id = self.docker_image.repo_uri.split(".")[0]
+                tag = self.docker_image.repo_uri.split(":")[-1]
 
-                    aws.clients.ecr.batch_delete_image(
-                        registryId=registry_id,
-                        repositoryName=repo_name,
-                        imageIds=[{"imageTag": tag}],
-                    )
-                else:
-                    # This is not the default repo, feel free to clobber
-                    repo = aws.DockerRepo(name=repo_name)
-                    repo.clobber()
+                aws.clients.ecr.batch_delete_image(
+                    registryId=registry_id,
+                    repositoryName=repo_name,
+                    imageIds=[{"imageTag": tag}],
+                )
+            else:
+                # This is not the default repo, feel free to clobber
+                repo = aws.DockerRepo(name=repo_name)
+                repo.clobber()
 
         if clobber_image:
             self.docker_image.clobber()

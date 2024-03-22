@@ -3,7 +3,7 @@ import pickle
 import time
 from collections import namedtuple
 from collections.abc import Mapping
-
+from typing import Any, Optional
 import cloudpickle
 
 import cloudknot.config
@@ -24,7 +24,7 @@ __all__ = ["BatchJob"]
 mod_logger = logging.getLogger(__name__)
 
 
-def _exists_already(job_id):
+def _exists_already(job_id: str) -> namedtuple:
     """
     Check if an AWS batch job exists already.
 
@@ -101,14 +101,14 @@ class BatchJob(NamedObject):
 
     def __init__(
         self,
-        job_id=None,
-        name=None,
-        job_queue=None,
-        job_definition=None,
-        input_=None,
-        starmap=False,
-        environment_variables=None,
-        array_job=True,
+        job_id: Optional[str] = None,
+        name: Optional[str] = None,
+        job_queue: Optional[str] = None,
+        job_definition: Optional[namedtuple | object] = None,
+        input_: Any = None,
+        starmap: bool = False,
+        environment_variables: Optional[list[dict]] = None,
+        array_job: bool = True,
     ):
         """Initialize an AWS Batch Job object.
 
@@ -121,16 +121,16 @@ class BatchJob(NamedObject):
         job_id: string
             The AWS jobID, if requesting a job that already exists
 
-        name : string
+        name : str
             Name of the job.
             Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
 
-        job_queue : string
+        job_queue : str
             Job queue ARN specifying the job queue to which this job
             will be submitted
 
         job_definition : namedtuple or object
-            namedtuple specifying the job definition on which to base this job.
+            Specifies the job definition on which to base this job.
             Must contain fields 'name', 'arn', 'output_bucket', and 'retries'
 
         input_ :
@@ -140,8 +140,8 @@ class BatchJob(NamedObject):
             If True, assume input is already grouped in
             tuples from a single iterable.
 
-        environment_variables : list of dict
-            list of key/value pairs representing environment variables
+        environment_variables : list[dict]
+            List of key/value pairs representing environment variables
             sent to the container
 
         array_job : bool
@@ -272,7 +272,7 @@ class BatchJob(NamedObject):
         """The AWS job-ID for this job."""
         return self._job_id
 
-    def _create(self):  # pragma: nocover
+    def _create(self) -> str:  # pragma: nocover
         """
         Create AWS batch job using instance parameters.
 
@@ -354,14 +354,14 @@ class BatchJob(NamedObject):
         return job_id
 
     @property
-    def status(self):
+    def status(self) -> dict:
         """
         Query AWS batch job status using instance parameter `self.job_id`.
 
         Returns
         -------
         status : dict
-            dictionary with keys: {status, statusReason, attempts}
+            Dictionary with keys: {status, statusReason, attempts}
             for this AWS batch job
         """
         if self.clobbered:
@@ -384,7 +384,7 @@ class BatchJob(NamedObject):
         return {k: job.get(k) for k in keys}  # Return status
 
     @property
-    def log_urls(self):
+    def log_urls(self) -> list[str]:
         """
         Return the urls of the batch job logs on AWS Cloudwatch.
 
@@ -408,7 +408,7 @@ class BatchJob(NamedObject):
         return [log_name2url(log) for log in log_stream_names]
 
     @property
-    def done(self):
+    def done(self) -> bool:
         """Return True if the job is done.
 
         In this case, "done" means the job status is SUCCEEDED or that it is
@@ -420,7 +420,7 @@ class BatchJob(NamedObject):
             and len(stat["attempts"]) >= self.job_definition.retries
         )
 
-    def _collect_array_job_result(self, idx=0):
+    def _collect_array_job_result(self, idx: int = 0) -> Any:
         """Collect the array job results and return as a complete list.
 
         Parameters
@@ -466,7 +466,7 @@ class BatchJob(NamedObject):
             )
         )
 
-    def result(self, timeout=None):
+    def result(self, timeout: Optional[int | float] = None) -> Any:
         """
         Return the result of the latest attempt.
 
@@ -508,7 +508,7 @@ class BatchJob(NamedObject):
             ]
         return self._collect_array_job_result()
 
-    def terminate(self, reason):
+    def terminate(self, reason: str):
         """
         Terminate AWS batch job using instance parameter `self.job_id`.
 
@@ -518,7 +518,7 @@ class BatchJob(NamedObject):
 
         Parameters
         ----------
-        reason : string
+        reason : str
             A message to attach to the job that explains the reason for
             cancelling/terminating it. This message is returned by future
             DescribeJobs operations on the job. This message is also recorded
@@ -553,7 +553,7 @@ class BatchJob(NamedObject):
             )
 
     def clobber(self):
-        """Kill an batch job and remove it's info from config."""
+        """Kill a batch job and remove its info from config."""
         if self.clobbered:
             return
 

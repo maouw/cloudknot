@@ -25,18 +25,18 @@ from . import aws
 __all__ = [
     "add_resource",
     "get_config_file",
+    "is_valid_stack",
     "prune",
     "prune_stacks",
     "remove_resource",
     "rlock",
     "verify_sections",
-    "is_valid_stack",
 ]
 mod_logger = logging.getLogger(__name__)
 rlock = RLock()
 
 
-def get_config_file():
+def get_config_file() -> str:
     """
     Get the path to the cloudknot config file.
 
@@ -46,7 +46,7 @@ def get_config_file():
 
     Returns
     -------
-    config_file : string
+    config_file : str
         Path to cloudknot config file
     """
     try:
@@ -84,19 +84,19 @@ def get_config_file():
     return config_file
 
 
-def add_resource(section, option, value):
+def add_resource(section: str, option: str, value: str):
     """
     Add a resource to the cloudknot config file.
 
     Parameters
     ----------
-    section : string
+    section : str
         Config section to which to add option:value
 
-    option : string
+    option : str
         Config option to add (i.e. the key in the key:value pair)
 
-    value : string
+    value : str
         Config value to add (i.e. second item in key:value pair)
     """
     config_file = get_config_file()
@@ -111,16 +111,16 @@ def add_resource(section, option, value):
             config.write(f)
 
 
-def remove_resource(section, option):
+def remove_resource(section: str, option: str):
     """
     Remove a resource from the cloudknot config file.
 
     Parameters
     ----------
-    section : string
+    section : str
         Config section from which to remove option
 
-    option : string
+    option : str
         Config option to remove (i.e. the key in the key:value pair)
     """
     config_file = get_config_file()
@@ -166,7 +166,8 @@ def verify_sections():
             config.write(f)
 
 
-def is_valid_stack(stack_id):
+def is_valid_stack(stack_id: str):
+    """Check if a CloudFormation stack exists on AWS and is in a valid state."""
     try:
         response = aws.clients.cloudformation.describe_stacks(StackName=stack_id)
     except aws.clients.cloudformation.exceptions.ClientError as e:

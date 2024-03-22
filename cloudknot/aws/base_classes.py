@@ -5,18 +5,17 @@ import os
 import re
 import uuid
 
+from typing import NamedTuple, Optional, cast
+import contextlib
+
 import boto3
 import botocore
 
-try:
-    from collections.abc import namedtuple
-except ImportError:
-    from collections import namedtuple
-
-import contextlib
 
 from ..config import get_config_file, rlock
 from .clients import CloudknotClients
+import botocore.exceptions
+from mypy_boto3_s3.literals import BucketLocationConstraintType
 
 __all__ = [
     "BatchJobFailedError",
@@ -50,57 +49,50 @@ mod_logger = logging.getLogger(__name__)
 client_names = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
 
 
-def get_tags(name, additional_tags=None):
+def get_tags(
+    name: str, additional_tags: Optional[dict | list[dict]] = None
+) -> list[dict]:
     """Get a list of tags for an AWS resource."""
-    tag_list = []
-    if additional_tags is not None:
-        if isinstance(additional_tags, list):
-            if not all(
-                set(item.keys()) == {"Key", "Value"} for item in additional_tags
-            ):
+
+    match additional_tags:
+        case None:
+            tag_dict = {}
+        case list():
+            try:
+                tag_dict = {item["Key"]: item["Value"] for item in additional_tags}
+            except KeyError:
                 raise ValueError(
-                    "If additional_tags is a list, it must be a list of "
-                    "dictionaries of the form {'Key': key_val, 'Value': "
+                    "If `additional_tags` is a list, it must be a list of dictionaries of the form {'Key': key_val, 'Value': "
                     "value_val}."
                 )
-            tag_list += additional_tags
-        elif isinstance(additional_tags, dict):
+        case dict():
             if "Key" in additional_tags or "Value" in additional_tags:
                 raise ValueError(
-                    "If additional_tags is a dict, it cannot contain keys named 'Key' or "
-                    "'Value'. It looks like you are trying to pass in tags of the form "
-                    "{'Key': key_val, 'Value': value_val}. If that's the case, please put "
-                    "it in a list, i.e. [{'Key': key_val, 'Value': value_val}]."
+                    "If `additional_tags` is a dict, it cannot contain keys named 'Key' or 'Value'. It looks like you are trying to pass in tags of the form  `{'Key': key_val, 'Value': value_val}`. If that's the case, please put it in a `list`, i.e. `[{'Key': key_val, 'Value': value_val}]`."
                 )
-            tag_list = [{"Key": k, "Value": v} for k, v in additional_tags.items()]
-        else:
+            tag_dict = additional_tags
+        case _:
             raise ValueError(
-                "additional_tags must be a dictionary or a list of dictionaries."
+                "`additional_tags` must be a `dict` or a `list` of `dict`s."
             )
 
-    if not [tag for tag in tag_list if tag["Key"] == "Name"]:
-        tag_list.append({"Key": "Name", "Value": name})
-
-    if not [tag for tag in tag_list if tag["Key"] == "Owner"]:
-        tag_list.append({"Key": "Owner", "Value": get_user()})
-
-    if not [tag for tag in tag_list if tag["Key"] == "Environment"]:
-        tag_list.append({"Key": "Environment", "Value": "cloudknot"})
-
-    return tag_list
+    tag_dict.setdefault("Name", name)
+    tag_dict.setdefault("Owner", get_user())
+    tag_dict.setdefault("Environment", "cloudknot")
+    return [{"Key": k, "Value": v} for k, v in tag_dict.items()]
 
 
-def get_ecr_repo():
+def get_ecr_repo() -> str:
     """Get the cloudknot ECR repository.
 
-    First, check the cloudknot config file for the ecr-repo option.
-    If that fails, check for the CLOUDKNOT_ECR_REPO environment variable.
-    If that fails, use 'cloudknot'
+    First, check the cloudknot config file for the 'ecr-repo' option.
+    If that fails, check for the `CLOUDKNOT_ECR_REPO` environment variable.
+    If that fails, use 'cloudknot'.
 
     Returns
     -------
-    repo : string
-        Cloudknot ECR repository name
+    repo : str
+        Cloudknot ECR repository name.
     """
     config_file = get_config_file()
     config = configparser.ConfigParser()
@@ -118,19 +110,18 @@ def get_ecr_repo():
         # Use set_ecr_repo to check for name availability
         # and write to config file
         set_ecr_repo(repo)
-
     return repo
 
 
-def set_ecr_repo(repo):
+def set_ecr_repo(repo: str):
     """Set the cloudknot ECR repo.
 
     Set repo by modifying the cloudknot config file
 
     Parameters
     ----------
-    repo : string
-        Cloudknot ECR repo name
+    repo : str
+        Cloudknot ECR repo name.
     """
     # Update the config file
     config_file = get_config_file()
@@ -159,32 +150,23 @@ def set_ecr_repo(repo):
             # If it doesn't exists already, then create it
             response = clients.ecr.create_repository(repositoryName=repo)
             repo_arn = response["repository"]["repositoryArn"]
-        except botocore.exceptions.ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            if error_code == "RepositoryNotFoundException":
-                # If it doesn't exist already, then create it
-                response = clients.ecr.create_repository(repositoryName=repo)
-                repo_arn = response["repository"]["repositoryArn"]
 
-        try:
-            clients.ecr.tag_resource(
-                resourceArn=repo_arn,
-                tags=get_tags(
-                    name=repo, additional_tags={"Project": "Cloudknot global config"}
-                ),
-            )
-        except NotImplementedError as e:
-            moto_msg = "The tag_resource action has not been implemented"
-            if moto_msg in e.args:
-                # This exception is here for compatibility with moto
-                # testing since the tag_resource action has not been
-                # implemented in moto. Simply move on.
-                pass
-            else:
-                raise e
+        clients.ecr.tag_resource(
+            resourceArn=repo_arn,
+            tags=get_tags(
+                name=repo, additional_tags={"Project": "Cloudknot global config"}
+            ),
+        )
 
 
-def get_s3_params():
+class BucketInfo(NamedTuple):
+    bucket: str
+    policy: str
+    policy_arn: str
+    sse: str
+
+
+def get_s3_params() -> BucketInfo:
     """Get the cloudknot S3 bucket and corresponding access policy.
 
     For the bucket name, first check the cloudknot config file for the bucket
@@ -201,12 +183,10 @@ def get_s3_params():
     Returns
     -------
     bucket : NamedTuple
-        A namedtuple with fields ['bucket', 'policy', 'policy_arn', 'sse']
+        A namedtuple with fields ('bucket', 'policy', 'policy_arn', 'sse')
     """
     config_file = get_config_file()
     config = configparser.ConfigParser()
-
-    BucketInfo = namedtuple("BucketInfo", ["bucket", "policy", "policy_arn", "sse"])
 
     with rlock:
         config.read(config_file)
@@ -276,34 +256,36 @@ def get_s3_params():
     return BucketInfo(bucket=bucket, policy=policy, policy_arn=policy_arn, sse=sse)
 
 
-def set_s3_params(bucket, policy=None, sse=None):
+def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] = None):
     """Set the cloudknot S3 bucket.
 
     Set bucket by modifying the cloudknot config file
 
     Parameters
     ----------
-    bucket : string
+    bucket : str
         Cloudknot S3 bucket name
-    policy : string
+    policy : str
         Cloudknot S3 bucket access policy name
         Default: None means that cloudknot will create a new policy
-    sse : string
+    sse : str
         S3 server side encryption method. If provided, must be one of
         ['AES256', 'aws:kms'].
         Default: None
     """
-    if sse is not None and sse not in {"AES256", "aws:kms"}:
-        raise CloudknotInputError(
-            'The server-side encryption option "sse" '
-            'must be one of ["AES256", "aws:kms"]'
-        )
+    match sse:
+        case None | "AES256" | "aws:kms":
+            pass
+        case _:
+            raise CloudknotInputError(
+                f"The server-side encryption option `sse` must be one of ['AES256', 'aws:kms']. You provided {sse}."
+            )
 
     # Update the config file
     config_file = get_config_file()
     config = configparser.ConfigParser()
 
-    def test_bucket_put_get(bucket_, sse_):
+    def test_bucket_put_get(bucket_: str, sse_: Optional[str] = None):
         key = "cloudnot-test-permissions-key"  # FIXME: Typo in word 'cloudnot'
         try:
             if sse_:
@@ -312,13 +294,10 @@ def set_s3_params(bucket, policy=None, sse=None):
                 )
             else:
                 clients.s3.put_object(Bucket=bucket_, Body=b"test", Key=key)
-
             clients.s3.get_object(Bucket=bucket_, Key=key)
-        except clients.s3.exceptions.ClientError:
+        except clients.s3.exceptions.BucketAlreadyExists:
             raise CloudknotInputError(
-                "The requested bucket name already "
-                "exists and you do not have permission "
-                "to put or get objects in it."
+                "The requested bucket name already exists and you do not have permission to put or get objects in it."
             )
 
         with contextlib.suppress(Exception):
@@ -339,7 +318,11 @@ def set_s3_params(bucket, policy=None, sse=None):
             else:
                 clients.s3.create_bucket(
                     Bucket=bucket,
-                    CreateBucketConfiguration={"LocationConstraint": get_region()},
+                    CreateBucketConfiguration={
+                        "LocationConstraint": cast(
+                            BucketLocationConstraintType, get_region()
+                        )
+                    },
                 )
         except clients.s3.exceptions.BucketAlreadyOwnedByYou:
             pass
@@ -403,12 +386,14 @@ def set_s3_params(bucket, policy=None, sse=None):
             config.write(f)
 
 
-def bucket_policy_document(bucket):
+def bucket_policy_document(
+    bucket: str,
+) -> dict[str, str | list[dict[str, str | list[str]]]]:
     """Return the policy document to access an S3 bucket.
 
     Parameters
     ----------
-    bucket: string
+    bucket: str
         An Amazon S3 bucket name
 
     Returns
@@ -423,27 +408,27 @@ def bucket_policy_document(bucket):
             {
                 "Effect": "Allow",
                 "Action": ["s3:ListBucket"],
-                "Resource": ["arn:aws:s3:::{0:s}".format(bucket)],
+                "Resource": [f"arn:aws:s3:::{bucket}"],
             },
             {
                 "Effect": "Allow",
                 "Action": ["s3:PutObject", "s3:GetObject"],
-                "Resource": ["arn:aws:s3:::{0:s}/*".format(bucket)],
+                "Resource": [f"arn:aws:s3:::{bucket}/*"],
             },
         ],
     }
 
 
-def update_s3_policy(policy, bucket):
+def update_s3_policy(policy: str, bucket: str):
     """Update the cloudknot S3 access policy with new bucket name.
 
     Parameters
     ----------
-    policy: string
-        Amazon S3 bucket access policy name
+    policy: str
+        Amazon S3 bucket access policy name.
 
-    bucket: string
-        Amazon S3 bucket name
+    bucket: str
+        Amazon S3 bucket name.
     """
     s3_policy_doc = bucket_policy_document(bucket)
 
@@ -494,7 +479,7 @@ def update_s3_policy(policy, bucket):
             )
 
 
-def get_region():
+def get_region() -> str:
     """Get the default AWS region.
 
     First, check the cloudknot config file for the region option.
@@ -504,7 +489,7 @@ def get_region():
 
     Returns
     -------
-    region : string
+    region : str
         default AWS region
     """
     config_file = get_config_file()
@@ -551,14 +536,14 @@ def get_region():
         return region
 
 
-def set_region(region="us-east-1"):
+def set_region(region: str = "us-east-1"):
     """Set the AWS region that cloudknot will use.
 
     Set region by modifying the cloudknot config file and clients
 
     Parameters
     ----------
-    region : string
+    region : str
         An AWS region.
         Default: 'us-east-1'
     """
@@ -597,7 +582,13 @@ def set_region(region="us-east-1"):
     mod_logger.debug("Set region to {region:s}".format(region=region))
 
 
-def list_profiles():
+class ProfileInfo(NamedTuple):
+    profile_names: list[str]
+    credentials_file: str
+    aws_config_file: str
+
+
+def list_profiles() -> ProfileInfo:
     """Return a list of available AWS profile names.
 
     Search the aws credentials file and the aws config file for profile names
@@ -642,11 +633,6 @@ def list_profiles():
 
     profile_names += credentials.sections()
 
-    # define a namedtuple for return value type
-    ProfileInfo = namedtuple(
-        "ProfileInfo", ["profile_names", "credentials_file", "aws_config_file"]
-    )
-
     return ProfileInfo(
         profile_names=profile_names,
         credentials_file=credentials_file,
@@ -654,13 +640,13 @@ def list_profiles():
     )
 
 
-def get_user():
+def get_user() -> str:
     """Get the current AWS username."""
     user_info = clients.iam.get_user().get("User")
     return user_info.get("UserName", user_info.get("Arn").split(":")[-1])
 
 
-def get_profile(fallback="from-env"):
+def get_profile(fallback: str = "from-env") -> str:
     """Get the AWS profile to use.
 
     First, check the cloudknot config file for the profile option.
@@ -670,13 +656,13 @@ def get_profile(fallback="from-env"):
 
     Parameters
     ----------
-    fallback : string (optional)
+    fallback : str (optional)
         The fallback value if get_profile() cannot find an AWS profile.
         Default: 'from-env'
 
     Returns
     -------
-    profile_name : string
+    profile_name : str
         An AWS profile listed in the aws config file or aws shared
         credentials file
     """
@@ -709,14 +695,14 @@ def get_profile(fallback="from-env"):
         return profile
 
 
-def set_profile(profile_name):
+def set_profile(profile_name: str):
     """Set the AWS profile that cloudknot will use.
 
     Set profile by modifying the cloudknot config file and clients
 
     Parameters
     ----------
-    profile_name : string
+    profile_name : str
         An AWS profile listed in the aws config file or aws shared
         credentials file
     """
@@ -779,7 +765,7 @@ _clients = {
 clients = CloudknotClients(_clients)
 
 
-def refresh_clients(max_pool=10):
+def refresh_clients(max_pool: int = 10):
     """Refresh the boto3 clients dictionary."""
     with rlock:
         config = botocore.config.Config(max_pool_connections=max_pool)
@@ -792,15 +778,15 @@ def refresh_clients(max_pool=10):
 class ResourceExistsException(Exception):
     """Exception indicating that the requested AWS resource already exists."""
 
-    def __init__(self, message, resource_id):
+    def __init__(self, message: str, resource_id: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        message : string
+        message : str
             The error message to display to the user
 
-        resource_id : string
+        resource_id : str
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
         super().__init__(message)
@@ -811,15 +797,15 @@ class ResourceExistsException(Exception):
 class ResourceDoesNotExistException(Exception):
     """Exception indicating that the requested AWS resource does not exists."""
 
-    def __init__(self, message, resource_id):
+    def __init__(self, message: str, resource_id: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        message : string
+        message : str
             The error message to display to the user
 
-        resource_id : string
+        resource_id : str
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
         super().__init__(message)
@@ -830,15 +816,15 @@ class ResourceDoesNotExistException(Exception):
 class ResourceClobberedException(Exception):
     """Exception indicating that this AWS resource has been clobbered."""
 
-    def __init__(self, message, resource_id):
+    def __init__(self, message: str, resource_id: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        message : string
+        message : str
             The error message to display to the user
 
-        resource_id : string
+        resource_id : str
             The resource ID (e.g. ARN, VPC-ID) of the requested resource
         """
         super().__init__(message)
@@ -854,10 +840,10 @@ class CannotDeleteResourceException(Exception):
 
         Parameters
         ----------
-        message : string
+        message : str
             The error message to display to the user
 
-        resource_id : string
+        resource_id : str
             The resource ID (e.g. ARN, VPC-ID) of the dependent resources
         """
         super().__init__(message)
@@ -868,12 +854,27 @@ class CannotDeleteResourceException(Exception):
 class CannotCreateResourceException(Exception):
     """Exception indicating that an AWS resource cannot be created."""
 
-    def __init__(self, message):
+    def __init__(self, message: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        message : string
+        message : str
+            The error message to display to the user
+        """
+        super().__init__(message)
+
+
+# noinspection PyPropertyAccess,PyAttributeOutsideInit
+class CannotTagResourceException(Exception):
+    """Exception indicating that an AWS resource cannot be tagged."""
+
+    def __init__(self, message: str):
+        """Initialize the Exception.
+
+        Parameters
+        ----------
+        message : str
             The error message to display to the user
         """
         super().__init__(message)
@@ -888,7 +889,7 @@ class RegionException(Exception):
 
         Parameters
         ----------
-        resource_region : string
+        resource_region : str
             The resource region
         """
         super().__init__(
@@ -910,7 +911,7 @@ class ProfileException(Exception):
 
         Parameters
         ----------
-        resource_profile : string
+        resource_profile : str
             The resource profile
         """
         super().__init__(
@@ -944,12 +945,12 @@ class CKTimeoutError(Exception):
 class BatchJobFailedError(Exception):
     """Error indicating an AWS Batch job failed."""
 
-    def __init__(self, job_id):
+    def __init__(self, job_id: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        job_id : string
+        job_id : str
             The AWS jobId of the failed job
         """
         super().__init__("AWS Batch job {job_id:s} has failed.".format(job_id=job_id))
@@ -958,14 +959,14 @@ class BatchJobFailedError(Exception):
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
 class CloudknotConfigurationError(Exception):
-    """Error indicating an cloudknot has not been properly configured."""
+    """Error indicating cloudknot has not been properly configured."""
 
-    def __init__(self, config_file):
+    def __init__(self, config_file: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        config_file : string
+        config_file : str
             The path to the cloudknot config file
         """
         super().__init__(
@@ -981,12 +982,12 @@ class CloudknotConfigurationError(Exception):
 class CloudknotInputError(Exception):
     """Error indicating an input argument has an invalid value."""
 
-    def __init__(self, msg):
+    def __init__(self, msg: str):
         """Initialize the Exception.
 
         Parameters
         ----------
-        msg : string
+        msg : str
             The error message
         """
         super().__init__(msg)
@@ -996,14 +997,14 @@ class CloudknotInputError(Exception):
 class NamedObject(object):
     """Base class for building objects with name property."""
 
-    def __init__(self, name):
+    def __init__(self, name: str):
         """Initialize a base class with a name.
 
         Parameters
         ----------
-        name : string
+        name : str
             Name of the object.
-            Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
+            Must satisfy regular expression pattern: r'[a-zA-Z][-a-zA-Z0-9]*'
         """
         config_file = get_config_file()
         conf = configparser.ConfigParser()
@@ -1017,7 +1018,7 @@ class NamedObject(object):
             ):
                 raise CloudknotConfigurationError(config_file)
 
-        pattern = re.compile("^[a-zA-Z][-a-zA-Z0-9]*$")
+        pattern = re.compile(r"^[a-zA-Z][-a-zA-Z0-9]*$")
         if not pattern.match(name):
             raise CloudknotInputError(
                 "We use name in AWS resource identifiers so it must "
@@ -1050,7 +1051,7 @@ class NamedObject(object):
         """The AWS profile in which this resource was created."""
         return self._profile
 
-    def _get_section_name(self, resource_type):
+    def _get_section_name(self, resource_type: str) -> str:
         """Return the config section name.
 
         Append profile and region to the resource type name

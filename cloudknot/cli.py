@@ -1,5 +1,5 @@
 """
-cloudknot
+cloudknot.
 
 Usage:
   cloudknot configure

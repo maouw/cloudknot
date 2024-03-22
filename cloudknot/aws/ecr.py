@@ -1,7 +1,7 @@
 """Classes for creating and managing remote docker repositories."""
 
 import logging
-from collections import namedtuple
+from typing import NamedTuple, Optional
 
 import botocore.exceptions
 
@@ -13,7 +13,15 @@ __all__ = ["DockerRepo"]
 mod_logger = logging.getLogger(__name__)
 
 
-def _get_repo_info_from_uri(repo_uri):
+class RepoInfo(NamedTuple):
+    """NamedTuple for holding information about an AWS ECR repository."""
+
+    name: str
+    uri: str
+    registry_id: str
+
+
+def _get_repo_info_from_uri(repo_uri: str):
     # Get all repositories
     repositories = clients.ecr.describe_repositories(maxResults=500)["repositories"]
 
@@ -33,7 +41,9 @@ def _get_repo_info_from_uri(repo_uri):
 class DockerRepo(NamedObject):
     """Class for creating and managing remote docker repositories."""
 
-    def __init__(self, name, aws_resource_tags=None):
+    def __init__(
+        self, name: str, aws_resource_tags: Optional[dict | list[dict]] = None
+    ):
         """Initialize a Docker repo object.
 
         User may provide only `name` input, indicating that they would
@@ -84,14 +94,14 @@ class DockerRepo(NamedObject):
         """Registry ID for this AWS ECR repository."""
         return self._repo_registry_id
 
-    def _create_repo(self):
+    def _create_repo(self) -> RepoInfo:
         """
         Create or retrieve an AWS ECR repository.
 
         Returns
         -------
-        RepoInfo : namedtuple
-            a namedtuple with fields name, uri, and registry_id
+        RepoInfo : NamedTuple
+            A NamedTuple with fields name, uri, and registry_id
         """
         # Flake8 will see that repo_arn is set in the try/except clauses
         # and claim that we are referencing it before assignment below
@@ -135,32 +145,12 @@ class DockerRepo(NamedObject):
                 repo_created = True
 
         if repo_created:
-            mod_logger.info(
-                "Created repository {name:s} at {uri:s}".format(
-                    name=self.name, uri=repo_uri
-                )
-            )
+            mod_logger.info(f"Created repository {self.name} at {repo_uri}")
         else:
-            mod_logger.info(
-                "Repository {name:s} already exists at {uri:s}".format(
-                    name=self.name, uri=repo_uri
-                )
-            )
+            mod_logger.info(f"Repository {self.name} already exists at {repo_uri}")
 
-        try:
-            clients.ecr.tag_resource(resourceArn=repo_arn, tags=self.tags)
-        except NotImplementedError as e:
-            moto_msg = "The tag_resource action has not been implemented"
-            if moto_msg in e.args:
-                # This exception is here for compatibility with moto
-                # testing since the tag_resource action has not been
-                # implemented in moto. Simply move on.
-                pass
-            else:
-                raise e
-
+        clients.ecr.tag_resource(resourceArn=repo_arn, tags=self.tags)
         # Define and return namedtuple with repo info
-        RepoInfo = namedtuple("RepoInfo", ["name", "uri", "registry_id"])
         return RepoInfo(name=repo_name, uri=repo_uri, registry_id=repo_registry_id)
 
     def clobber(self):

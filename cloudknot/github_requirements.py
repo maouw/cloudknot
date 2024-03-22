@@ -1,4 +1,4 @@
-"""Process pip GitHub requirements"""
+"""Process pip GitHub requirements."""
 
 from urllib.parse import urlparse
 
@@ -70,7 +70,7 @@ class GitHubNameSpecRequirement(GitHubRequirement):
 
 
 def parse_github_requirement(url: str) -> str:
-    """Parse a GitHub URL into a pip requirement"""
+    """Parse a GitHub URL into a pip requirement."""
     try:
         requirement = GitHubRequirement(url)
     except CloudknotInputError:
