@@ -98,8 +98,15 @@ API
 For details on the rest of the cloudknot API, please see the following
 module pages.
 
-.. toctree::
-   :maxdepth: 2
+.. autosummary::
+    :toctree: api
+    :template: custom_module.rst
+    :recursive:
 
-   api/aws
-   api/config
+    cloudknot.cloudknot
+    cloudknot.aws
+    cloudknot.dockerimage
+    cloudknot.config
+
+
+

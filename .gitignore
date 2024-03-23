@@ -1,18 +1,34 @@
-*.pyc
-*~
-*.DS_Store
-_build/
-auto_examples/
-gen_api/
-doc/api/_autosummary
-cloudknot/_version.py
-*.ipynb_checkpoints
+# === python ===
+__pycache__/
+*.py[cod]
+
+# === venv ===
+.venv/
+
+# === pep 582 ===
+__pypackages__/
+
+
+# === mypy ===
+.mypy_cache/
+
+# === ruff ===
+.ruff_cache/
+
+# === pytest ===
+.pytest_cache/
+
+# === coverage ===
 .coverage
-.cache
-.pytest_cache
-build/
-cloudknot.egg-info/
-pip-wheel-metadata/
+
+# === sphinx ===
+doc/_build/
+doc/api/_autosummary
+
+# == jupyter
+*.ipynb_checkpoints
+
+# == setuptools
+*.egg-info
+*.egg
 dist/
-**Untitled*.ipynb
-*.sw?

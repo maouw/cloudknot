@@ -1,7 +1,7 @@
 
 extend = "pyproject.toml"
 output-format = "full"
-extend-exclude = ["tests", "data"]
+#extend-exclude = ["tests", "data"]
 [lint]
 extend-select = [
 	"C90",	 	# mccabe
