@@ -8,14 +8,13 @@ import uuid
 from typing import NamedTuple, Optional, cast
 import contextlib
 
-import boto3
 import botocore
 
 
 from ..config import get_config_file, rlock
 from .clients import CloudknotClients
-import botocore.exceptions
 from mypy_boto3_s3.literals import BucketLocationConstraintType
+
 
 __all__ = [
     "BatchJobFailedError",
@@ -43,15 +42,16 @@ __all__ = [
     "set_profile",
     "set_region",
     "set_s3_params",
+    "BucketInfo",
+    "ProfileInfo",
 ]
 mod_logger = logging.getLogger(__name__)
 
 client_names = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
 
-
 def get_tags(
     name: str, additional_tags: Optional[dict | list[dict]] = None
-) -> list[dict]:
+) -> list[dict[str, str]]:
     """Get a list of tags for an AWS resource."""
 
     match additional_tags:
@@ -149,21 +149,25 @@ def set_ecr_repo(repo: str):
         except clients.ecr.exceptions.RepositoryNotFoundException:
             # If it doesn't exists already, then create it
             response = clients.ecr.create_repository(repositoryName=repo)
-            repo_arn = response["repository"]["repositoryArn"]
+            try:
+                repo_arn = response["repository"]["repositoryArn"]
+            except KeyError:
+                raise CloudknotConfigurationError(f"Could not find ARN for repo {repo}")
 
         clients.ecr.tag_resource(
             resourceArn=repo_arn,
             tags=get_tags(
-                name=repo, additional_tags={"Project": "Cloudknot global config"}
+                name=repo, additional_tags={"Project": "Cloudknot global config"} # type: ignore
             ),
         )
 
 
 class BucketInfo(NamedTuple):
+    """A NamedTuple with fields ('bucket', 'policy', 'policy_arn', 'sse')."""
     bucket: str
     policy: str
     policy_arn: str
-    sse: str
+    sse: Optional[str]
 
 
 def get_s3_params() -> BucketInfo:
@@ -182,8 +186,8 @@ def get_s3_params() -> BucketInfo:
 
     Returns
     -------
-    bucket : NamedTuple
-        A namedtuple with fields ('bucket', 'policy', 'policy_arn', 'sse')
+    :
+        A NamedTuple with fields ('bucket', 'policy', 'policy_arn', 'sse')
     """
     config_file = get_config_file()
     config = configparser.ConfigParser()
@@ -290,7 +294,7 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
         try:
             if sse_:
                 clients.s3.put_object(
-                    Bucket=bucket_, Body=b"test", Key=key, ServerSideEncryption=sse_
+                    Bucket=bucket_, Body=b"test", Key=key, ServerSideEncryption=sse_ # type: ignore
                 )
             else:
                 clients.s3.put_object(Bucket=bucket_, Body=b"test", Key=key)
@@ -358,7 +362,7 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
             Bucket=bucket,
             Tagging={
                 "TagSet": get_tags(
-                    name=bucket, additional_tags={"Project": "Cloudknot global config"}
+                    name=bucket, additional_tags={"Project": "Cloudknot global config"} # type: ignore
                 )
             },
         )
@@ -570,19 +574,23 @@ def set_region(region: str = "us-east-1"):
 
         # Update the boto3 clients so that the region change is reflected
         # throughout the package
-        max_pool = clients.iam.meta.config.max_pool_connections
-        boto_config = botocore.config.Config(max_pool_connections=max_pool)
-        profile_name = get_profile(fallback=None)
-        session = boto3.Session(
-            profile_name=profile_name if profile_name != "from-env" else None
-        )
-        for k in client_names:
-            _clients[k] = session.client(k, region_name=region, config=boto_config)
+        clients.refresh(clients.iam.meta.config.max_pool_connections)
 
     mod_logger.debug("Set region to {region:s}".format(region=region))
 
 
 class ProfileInfo(NamedTuple):
+    """A NamedTuple with fields `profile_names`, `credentials_file`, and `aws_config_file`.
+
+    profile_names :
+        A list of AWS profiles in the aws config file and the aws shared credentials file
+
+    credentials_file :
+        A path to the aws shared credentials file
+
+    aws_config_file :
+        A path to the aws config file
+    """
     profile_names: list[str]
     credentials_file: str
     aws_config_file: str
@@ -595,8 +603,8 @@ def list_profiles() -> ProfileInfo:
 
     Returns
     -------
-    profile_names : namedtuple
-        A named tuple with fields: `profile_names`, a list of AWS profiles in
+    :
+        A NamedTuple with fields `profile_names`, a list of AWS profiles in
         the aws config file and the aws shared credentials file;
         `credentials_file`, a path to the aws shared credentials file;
         and `aws_config_file`, a path to the aws config file
@@ -646,7 +654,7 @@ def get_user() -> str:
     return user_info.get("UserName", user_info.get("Arn").split(":")[-1])
 
 
-def get_profile(fallback: str = "from-env") -> str:
+def get_profile(fallback: Optional[str] = "from-env") -> str | None:
     """Get the AWS profile to use.
 
     First, check the cloudknot config file for the profile option.
@@ -656,13 +664,13 @@ def get_profile(fallback: str = "from-env") -> str:
 
     Parameters
     ----------
-    fallback : str (optional)
+    fallback :
         The fallback value if get_profile() cannot find an AWS profile.
         Default: 'from-env'
 
     Returns
     -------
-    profile_name : str
+    profile_name :
         An AWS profile listed in the aws config file or aws shared
         credentials file
     """
@@ -732,16 +740,8 @@ def set_profile(profile_name: str):
 
         # Update the boto3 clients so that the profile change is reflected
         # throughout the package
-        max_pool = clients.iam.meta.config.max_pool_connections
-        boto_config = botocore.config.Config(max_pool_connections=max_pool)
-        session = boto3.Session(
-            profile_name=profile_name if profile_name != "from-env" else None
-        )
-        for k in client_names:
-            _clients[k] = session.client(
-                k, region_name=get_region(), config=boto_config
-            )
-
+        clients.refresh(clients.iam.meta.config.max_pool_connections)
+        
     mod_logger.debug("Set profile to {profile:s}".format(profile=profile_name))
 
 
@@ -754,24 +754,14 @@ Advanced users: if you want to use cloudknot and boto3 at the same time,
 you should use these clients to ensure that you have the right profile
 and region.
 """
-_clients = {
-    k: boto3.Session(profile_name=get_profile(fallback=None)).client(
-        k, region_name=get_region()
-    )
-    for k in client_names
-}
-
-
-clients = CloudknotClients(_clients)
+clients = CloudknotClients()
+clients.reset()
 
 
 def refresh_clients(max_pool: int = 10):
     """Refresh the boto3 clients dictionary."""
     with rlock:
-        config = botocore.config.Config(max_pool_connections=max_pool)
-        session = boto3.Session(profile_name=get_profile(fallback=None))
-        for k in client_names:
-            _clients[k] = session.client(k, region_name=get_region(), config=config)
+        clients.refresh(max_pool_connections=max_pool)
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
@@ -1056,7 +1046,7 @@ class NamedObject(object):
 
         Append profile and region to the resource type name
         """
-        return " ".join((resource_type, self.profile, self.region))
+        return " ".join((resource_type, self.profile or "", self.region))
 
     def check_profile(self):
         """Check for profile exception."""

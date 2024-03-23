@@ -24,6 +24,6 @@ def box_iterable(
         for el in x:
             if not isinstance(el, args):
                 raise TypeError(f"Type of element {el} is not in {args}")
-    if make_unique:
+    if box and make_unique:
         x = box(dict.fromkeys(x))
     return x

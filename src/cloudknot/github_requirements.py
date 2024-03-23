@@ -11,7 +11,7 @@ from .aws.base_classes import (
 __all__ = ["parse_github_requirement"]
 
 
-class GitHubRequirement(object):
+class GitHubRequirement:
     valid_schemes = (
         "git+http",
         "git+https",

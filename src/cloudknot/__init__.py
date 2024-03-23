@@ -10,7 +10,6 @@ from . import (
     aws,  # noqa
     config,  # noqa
 )
-from ._version import version as __version__  # noqa
 from .aws.base_classes import (  # noqa  # noqa  # noqa  # noqa
     get_ecr_repo,
     get_profile,
@@ -22,6 +21,8 @@ from .aws.base_classes import (  # noqa  # noqa  # noqa  # noqa
     set_profile,
     set_region,
     set_s3_params,
+    ProfileInfo,
+    BucketInfo,
 )
 from .cloudknot import *  # noqa
 from .dockerimage import *  # noqa

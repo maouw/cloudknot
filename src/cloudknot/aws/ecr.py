@@ -7,7 +7,7 @@ import botocore.exceptions
 
 import cloudknot.config
 
-from .base_classes import NamedObject, clients, get_ecr_repo, get_tags
+from .base_classes import CloudknotConfigurationError, NamedObject, clients, get_ecr_repo, get_tags
 
 __all__ = ["DockerRepo"]
 mod_logger = logging.getLogger(__name__)
@@ -52,12 +52,18 @@ class DockerRepo(NamedObject):
 
         Parameters
         ----------
-        name : str
+        name :
             Name of the remote repository.
             Must satisfy regular expression pattern: [a-zA-Z][-a-zA-Z0-9]*
 
-        aws_resource_tags : dict or list of dicts
+        aws_resource_tags :
             Additional AWS resource tags to apply to this repository
+
+            Default: ``'Default Value'`` if
+
+            faf
+
+
         """
         super().__init__(name=name)
 
@@ -100,8 +106,8 @@ class DockerRepo(NamedObject):
 
         Returns
         -------
-        RepoInfo : NamedTuple
-            A NamedTuple with fields name, uri, and registry_id
+        RepoInfo:
+            A NamedTuple with fields ('name', 'uri', 'registry_id')
         """
         # Flake8 will see that repo_arn is set in the try/except clauses
         # and claim that we are referencing it before assignment below
@@ -109,7 +115,6 @@ class DockerRepo(NamedObject):
         # string to pass parameter validation by boto.
         repo_arn = "test"
         repo_created = False
-        repo_name = repo_registry_id = repo_uri = None
         try:
             # If repo exists, retrieve its info
             response = clients.ecr.describe_repositories(repositoryNames=[self.name])
@@ -122,35 +127,21 @@ class DockerRepo(NamedObject):
         except clients.ecr.exceptions.RepositoryNotFoundException:
             # If it doesn't exists already, then create it
             response = clients.ecr.create_repository(repositoryName=self.name)
-
-            repo_arn = response["repository"]["repositoryArn"]
-            repo_name = response["repository"]["repositoryName"]
-            repo_uri = response["repository"]["repositoryUri"]
-            repo_registry_id = response["repository"]["registryId"]
-            repo_created = True
-        except botocore.exceptions.ClientError as e:
-            error_code = e.response["Error"]["Code"]
-            message = e.response["Error"]["Message"]
-            if (
-                error_code == "RepositoryNotFoundException"
-                or "RepositoryNotFoundException" in message
-            ):
-                # If it doesn't exists already, then create it
-                response = clients.ecr.create_repository(repositoryName=self.name)
-
+            try:
                 repo_arn = response["repository"]["repositoryArn"]
                 repo_name = response["repository"]["repositoryName"]
                 repo_uri = response["repository"]["repositoryUri"]
                 repo_registry_id = response["repository"]["registryId"]
                 repo_created = True
-
+            except KeyError as e:
+                mod_logger.error(f"Error creating repository {self.name}: {e}")
+                raise CloudknotConfigurationError(f"Error creating repository {self.name}: {e}") from e
         if repo_created:
             mod_logger.info(f"Created repository {self.name} at {repo_uri}")
         else:
             mod_logger.info(f"Repository {self.name} already exists at {repo_uri}")
 
         clients.ecr.tag_resource(resourceArn=repo_arn, tags=self.tags)
-        # Define and return namedtuple with repo info
         return RepoInfo(name=repo_name, uri=repo_uri, registry_id=repo_registry_id)
 
     def clobber(self):

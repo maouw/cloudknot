@@ -64,7 +64,7 @@ class DockerImage(aws.NamedObject):
         script_path: Optional[str] = None,
         dir_name: Optional[str] = None,
         base_image: Optional[str] = None,
-        github_installs: Optional[str | Collection[str]] = (),
+        github_installs: str | Collection[str] = (),
         ignore_installed: bool = False,
         pin_pip_versions: bool = False,
         username: Optional[str] = None,
@@ -98,7 +98,7 @@ class DockerImage(aws.NamedObject):
             Default: None will use the python base image for the
             current version of python
 
-        github_installs : str or collection of str
+        github_installs :
             Github addresses for packages to install from github rather than
             PyPI (e.g. git://github.com/nrdg/cloudknot.git or
             git://github.com/nrdg/cloudknot.git@newfeaturebranch)

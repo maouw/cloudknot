@@ -4,7 +4,6 @@ import configparser
 import ipaddress
 import logging
 import os
-from collections import namedtuple
 from collections.abc import Callable, Collection, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
@@ -702,19 +701,19 @@ class Knot(aws.NamedObject):
 
         Parameters
         ----------
-        name : str, optional
+        name :
             The name for this knot. Must be less than 46 characters.
             Must satisfy regular expression pattern r'[a-zA-Z][-a-zA-Z0-9]*'.
             Default: ${AWS-username}-default
 
-        pars : Pars, optional
+        pars :
             The PARS on which to base this knot's AWS resources.
             Default: Instance returned by Pars()
 
-        pars_policies : tuple[str], optional
+        pars_policies :
             Names of AWS policies to attach to each role
 
-        docker_image : DockerImage, optional
+        docker_image :
             The pre-existing DockerImage instance to adopt. i.e., you may construct your
             own Docker Image using
             ```
@@ -725,36 +724,36 @@ class Knot(aws.NamedObject):
             knot = cloudknot.Knot(..., docker_image=d)
             ```
 
-        base_image : str, optional
+        base_image :
             Docker base image on which to base this Dockerfile. You may not specify
             both `docker_image` and `base_image`.
             Default: If `docker_image` is not provided, the Python base image for the
             current version of python (e.g. 'python:3.10')
 
-        func : Callable, optional
+        func :
             Callable object or function to be dockerized
 
-        image_script_path : str | bytes | os.PathLike, optional
+        image_script_path :
             Path to file with python script to be dockerized
 
-        image_work_dir : str | bytes | os.PathLike, optional
+        image_work_dir :
             Directory to store `Dockerfile`, `requirements.txt`, and python script with
             CLI.
             Default: Parent directory of script if `script_path` is provided; otherwise,
             `DockerImage()` creates a new directory, accessible by the
             `docker_image.build_path` property.
 
-        image_github_installs : str | sequence of str
+        image_github_installs :
             URLs for packages to install from GitHuB rather than PyPI
             (e.g. git://github.com/nrdg/cloudknot.git or
             git://github.com/nrdg/cloudknot.git@newfeaturebranch)
             Default: ()
 
-        username : str
+        username :
             Default username created in Dockerfile and in batch job definition.
             Default: 'cloudknot-user'
 
-        repo_name : str, optional
+        repo_name :
             Name of the AWS ECR repository to store the created Docker image.
             Default: cloudknot.get_ecr_repo()
 
@@ -1386,8 +1385,7 @@ class Knot(aws.NamedObject):
                 "The job definition parameters in the AWS CloudFormation "
                 "stack do not match the input parameters."
             )
-        JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
-        self._job_definition = JobDef(
+        self._job_definition = aws.batch.JobDef(
             name=job_def_name,
             arn=job_def_arn,
             output_bucket=output_bucket,
@@ -1491,8 +1489,7 @@ class Knot(aws.NamedObject):
         ]
         output_bucket = bucket_env[0]["value"] if bucket_env else None
         job_def_retries = job_def["retryStrategy"]["attempts"]
-        JobDef = namedtuple("JobDef", ["name", "arn", "output_bucket", "retries"])
-        self._job_definition = JobDef(
+        self._job_definition = aws.batch.JobDef(
             name=job_def_name,
             arn=job_def_arn,
             output_bucket=output_bucket,
@@ -1550,8 +1547,8 @@ class Knot(aws.NamedObject):
         return self._docker_repo
 
     @property
-    def job_definition(self):
-        """Return namedtuple describing the job definition attached to this knot.
+    def job_definition(self) -> aws.batch.JobDef:
+        """Return JobDef describing the job definition attached to this knot.
 
         The fields are 'name', 'arn', 'output_bucket', and 'retries'
         """
