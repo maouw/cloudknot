@@ -182,7 +182,9 @@ class BatchJob(NamedObject):
             self._job_id = job.job_id
             self._array_job = job.array_job
 
-            bucket = self._job_definition.output_bucket if self._job_definition else None
+            bucket = (
+                self._job_definition.output_bucket if self._job_definition else None
+            )
             key = "/".join(
                 [
                     "cloudknot.jobs",

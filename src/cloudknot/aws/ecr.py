@@ -7,7 +7,13 @@ import botocore.exceptions
 
 import cloudknot.config
 
-from .base_classes import CloudknotConfigurationError, NamedObject, clients, get_ecr_repo, get_tags
+from .base_classes import (
+    CloudknotConfigurationError,
+    NamedObject,
+    clients,
+    get_ecr_repo,
+    get_tags,
+)
 
 __all__ = ["DockerRepo"]
 mod_logger = logging.getLogger(__name__)
@@ -135,7 +141,9 @@ class DockerRepo(NamedObject):
                 repo_created = True
             except KeyError as e:
                 mod_logger.error(f"Error creating repository {self.name}: {e}")
-                raise CloudknotConfigurationError(f"Error creating repository {self.name}: {e}") from e
+                raise CloudknotConfigurationError(
+                    f"Error creating repository {self.name}: {e}"
+                ) from e
         if repo_created:
             mod_logger.info(f"Created repository {self.name} at {repo_uri}")
         else:

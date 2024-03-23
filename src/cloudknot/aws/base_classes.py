@@ -49,6 +49,7 @@ mod_logger = logging.getLogger(__name__)
 
 client_names = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
 
+
 def get_tags(
     name: str, additional_tags: Optional[dict | list[dict]] = None
 ) -> list[dict[str, str]]:
@@ -157,13 +158,15 @@ def set_ecr_repo(repo: str):
         clients.ecr.tag_resource(
             resourceArn=repo_arn,
             tags=get_tags(
-                name=repo, additional_tags={"Project": "Cloudknot global config"} # type: ignore
+                name=repo,
+                additional_tags={"Project": "Cloudknot global config"},  # type: ignore
             ),
         )
 
 
 class BucketInfo(NamedTuple):
     """A NamedTuple with fields ('bucket', 'policy', 'policy_arn', 'sse')."""
+
     bucket: str
     policy: str
     policy_arn: str
@@ -294,7 +297,10 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
         try:
             if sse_:
                 clients.s3.put_object(
-                    Bucket=bucket_, Body=b"test", Key=key, ServerSideEncryption=sse_ # type: ignore
+                    Bucket=bucket_,
+                    Body=b"test",
+                    Key=key,
+                    ServerSideEncryption=sse_,  # type: ignore
                 )
             else:
                 clients.s3.put_object(Bucket=bucket_, Body=b"test", Key=key)
@@ -362,7 +368,8 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
             Bucket=bucket,
             Tagging={
                 "TagSet": get_tags(
-                    name=bucket, additional_tags={"Project": "Cloudknot global config"} # type: ignore
+                    name=bucket,
+                    additional_tags={"Project": "Cloudknot global config"},  # type: ignore
                 )
             },
         )
@@ -591,6 +598,7 @@ class ProfileInfo(NamedTuple):
     aws_config_file :
         A path to the aws config file
     """
+
     profile_names: list[str]
     credentials_file: str
     aws_config_file: str
@@ -741,7 +749,7 @@ def set_profile(profile_name: str):
         # Update the boto3 clients so that the profile change is reflected
         # throughout the package
         clients.refresh(clients.iam.meta.config.max_pool_connections)
-        
+
     mod_logger.debug("Set profile to {profile:s}".format(profile=profile_name))
 
 

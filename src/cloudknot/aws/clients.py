@@ -19,18 +19,21 @@ __all__ = ["CloudknotClients"]
 
 mod_logger = logging.getLogger(__name__)
 
+
 class CloudknotClients:
     """Holds all the boto3 clients used by cloudknot."""
 
     __CLIENT_NAMES: Literal["batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3"]
-    
+
     def __init__(self):
         self._max_pool_connections = 10
-    
+
     @cached_property
     def boto_config(self) -> botocore.config.Config:
         """Returns a botocore config object with the specified max_pool_connections."""
-        return botocore.config.Config(max_pool_connections=self._max_pool_connections, **kwargs)
+        return botocore.config.Config(
+            max_pool_connections=self._max_pool_connections, **kwargs
+        )
 
     @cached_property
     def boto_session(self) -> boto3.Session:
@@ -40,7 +43,9 @@ class CloudknotClients:
     def _make_client(self, client_name: str):
         """Make a boto3 client."""
         mod_logger.debug(f"Creating boto3 client for {client_name}")
-        return self.boto_session.client(client_name, region_name=get_region(), config=self.boto_config) # type: ignore
+        return self.boto_session.client(
+            client_name, region_name=get_region(), config=self.boto_config
+        )  # type: ignore
 
     @cached_property
     def batch(self) -> BatchClient:
@@ -90,4 +95,3 @@ class CloudknotClients:
         self._max_pool_connections = max_pool_connections
         for client_name in get_args(self.__CLIENT_NAMES):
             getattr(self, client_name, None)
-

@@ -7,6 +7,7 @@ For the full LICENSE and terms of use, see
 https://github.com/nipreps/dmriprep/blob/master/LICENSE
 
 """
+
 import sys
 import shutil
 from pathlib import Path
