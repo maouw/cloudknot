@@ -3,8 +3,6 @@
 import logging
 from typing import NamedTuple, Optional
 
-import botocore.exceptions
-
 import cloudknot.config
 
 from .base_classes import (
@@ -26,7 +24,6 @@ class RepoInfo(NamedTuple):
     uri: str
     registry_id: str
 
-
 def _get_repo_info_from_uri(repo_uri: str):
     # Get all repositories
     repositories = clients.ecr.describe_repositories(maxResults=500)["repositories"]
@@ -34,7 +31,7 @@ def _get_repo_info_from_uri(repo_uri: str):
     _repo_uri = repo_uri.split(":")[0]
     # Filter by matching on repo_uri
     matching_repo = next(
-        repo for repo in repositories if repo["repositoryUri"] == _repo_uri
+        repo for repo in repositories if repo.get("repositoryUri", "") == _repo_uri
     )
 
     return {
@@ -170,14 +167,6 @@ class DockerRepo(NamedObject):
             except clients.ecr.exceptions.RepositoryNotFoundException:
                 # It doesn't exist anyway, so carry on
                 pass
-            except botocore.exceptions.ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                message = e.response["Error"]["Message"]
-                if (
-                    error_code == "RepositoryNotFoundException"
-                    or "RepositoryNotFoundException" in message
-                ):
-                    pass
 
         # Remove from the config file
         cloudknot.config.remove_resource(self._section_name, self.name)

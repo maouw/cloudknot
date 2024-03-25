@@ -197,10 +197,6 @@ class Configure(Base):
         )
         refresh_clients()
 
-        pull_and_push_base_images(
-            region=values["region"],
-            profile=values["profile"],
-            ecr_repo=values["ecr_repo"],
-        )
+        pull_and_push_base_images(ecr_repo=values["ecr_repo"])
 
         print("All done.\n")

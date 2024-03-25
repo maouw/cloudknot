@@ -5,14 +5,15 @@ import os
 import re
 import uuid
 
-from typing import NamedTuple, Optional, cast
+from typing import NamedTuple, Optional, cast, TypedDict
 import contextlib
 
+import boto3
 import botocore
 
 
 from ..config import get_config_file, rlock
-from .clients import CloudknotClients
+from ._clients import CloudKnotClients
 from mypy_boto3_s3.literals import BucketLocationConstraintType
 
 
@@ -47,12 +48,29 @@ __all__ = [
 ]
 mod_logger = logging.getLogger(__name__)
 
-client_names = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
+#clients: CloudKnotClients = CloudKnotClients()
+import botocore.config
+def _make_client(service_name, config: Optional[botocore.config.Config]=None):
+    return boto3.Session(profile_name=get_profile()).client(
+        service_name=service_name,
+        region_name=get_region(),
+        config=config or botocore.config.Config(),
+    )
 
+
+clients = {}
+
+
+
+# TagTypeDef definition
+
+class TagType(TypedDict):
+    Key: str
+    Value: str
 
 def get_tags(
     name: str, additional_tags: Optional[dict | list[dict]] = None
-) -> list[dict[str, str]]:
+) -> list[TagType]:
     """Get a list of tags for an AWS resource."""
 
     match additional_tags:
@@ -113,7 +131,7 @@ def get_ecr_repo() -> str:
         set_ecr_repo(repo)
     return repo
 
-
+clients.cloudformation.describe_stacks(StackName="test")
 def set_ecr_repo(repo: str):
     """Set the cloudknot ECR repo.
 
@@ -154,7 +172,8 @@ def set_ecr_repo(repo: str):
                 repo_arn = response["repository"]["repositoryArn"]
             except KeyError:
                 raise CloudknotConfigurationError(f"Could not find ARN for repo {repo}")
-
+        
+        clients.ecr.
         clients.ecr.tag_resource(
             resourceArn=repo_arn,
             tags=get_tags(
@@ -762,14 +781,22 @@ Advanced users: if you want to use cloudknot and boto3 at the same time,
 you should use these clients to ensure that you have the right profile
 and region.
 """
-clients = CloudknotClients()
-clients.reset()
 
+CLIENT_NAMES = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
 
-def refresh_clients(max_pool: int = 10):
+c
+def create_clients(max_pool: int = 10, CLIENT_NAMES = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")):
     """Refresh the boto3 clients dictionary."""
-    with rlock:
-        clients.refresh(max_pool_connections=max_pool)
+    config = botocore.config.Config(max_pool_connections=max_pool)
+    return { # type: ignore
+        x: _make_client(x, config=config) for x in CLIENT_NAMES
+    }
+
+
+
+clients = create_clients()
+
+        
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit
