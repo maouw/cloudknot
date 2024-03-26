@@ -1,9 +1,9 @@
 import logging
 import pickle
 import time
-from typing import NamedTuple
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
+
 import cloudpickle
 
 import cloudknot.config

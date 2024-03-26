@@ -24,6 +24,7 @@ class RepoInfo(NamedTuple):
     uri: str
     registry_id: str
 
+
 def _get_repo_info_from_uri(repo_uri: str):
     # Get all repositories
     repositories = clients.ecr.describe_repositories(maxResults=500)["repositories"]

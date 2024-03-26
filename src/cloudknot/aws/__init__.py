@@ -1,3 +1,4 @@
+# ruff: noqa: F403
 """The aws submodule contains classes representing AWS resources.
 
 This module contains classes representing AWS resources:

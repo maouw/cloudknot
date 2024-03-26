@@ -1,21 +1,20 @@
 import configparser
+import contextlib
 import json
 import logging
 import os
 import re
 import uuid
-
-from typing import NamedTuple, Optional, cast, TypedDict
-import contextlib
-
+from typing import NamedTuple, Optional, TypedDict, Any, cast, get_args, Literal
+from functools import partial
+from collections.abc import Sequence
 import boto3
 import botocore
-
+from mypy_boto3_s3.literals import BucketLocationConstraintType, ServerSideEncryptionType
+from mypy_boto3_s3.type_defs import TagTypeDef, TaggingTypeDef,CreateBucketConfigurationTypeDef
 
 from ..config import get_config_file, rlock
-from ._clients import CloudKnotClients
-from mypy_boto3_s3.literals import BucketLocationConstraintType
-
+from .clients import CloudknotClients
 
 __all__ = [
     "BatchJobFailedError",
@@ -48,34 +47,18 @@ __all__ = [
 ]
 mod_logger = logging.getLogger(__name__)
 
-#clients: CloudKnotClients = CloudKnotClients()
-import botocore.config
-def _make_client(service_name, config: Optional[botocore.config.Config]=None):
-    return boto3.Session(profile_name=get_profile()).client(
-        service_name=service_name,
-        region_name=get_region(),
-        config=config or botocore.config.Config(),
-    )
-
-
-clients = {}
-
-
+clients: CloudknotClients = CloudknotClients()
 
 # TagTypeDef definition
 
-class TagType(TypedDict):
-    Key: str
-    Value: str
 
 def get_tags(
-    name: str, additional_tags: Optional[dict | list[dict]] = None
-) -> list[TagType]:
+    name: str, additional_tags: Optional[dict[str, Any] | Sequence[dict[str, Any]]] = None
+) -> Sequence[TagTypeDef]:
     """Get a list of tags for an AWS resource."""
-
     match additional_tags:
         case None:
-            tag_dict = {}
+            tag_dict = dict()
         case list():
             try:
                 tag_dict = {item["Key"]: item["Value"] for item in additional_tags}
@@ -131,7 +114,7 @@ def get_ecr_repo() -> str:
         set_ecr_repo(repo)
     return repo
 
-clients.cloudformation.describe_stacks(StackName="test")
+
 def set_ecr_repo(repo: str):
     """Set the cloudknot ECR repo.
 
@@ -172,13 +155,12 @@ def set_ecr_repo(repo: str):
                 repo_arn = response["repository"]["repositoryArn"]
             except KeyError:
                 raise CloudknotConfigurationError(f"Could not find ARN for repo {repo}")
-        
-        clients.ecr.
+
         clients.ecr.tag_resource(
             resourceArn=repo_arn,
             tags=get_tags(
                 name=repo,
-                additional_tags={"Project": "Cloudknot global config"},  # type: ignore
+                additional_tags={"Project": "Cloudknot global config"},
             ),
         )
 
@@ -189,7 +171,7 @@ class BucketInfo(NamedTuple):
     bucket: str
     policy: str
     policy_arn: str
-    sse: Optional[str]
+    sse: Optional[ServerSideEncryptionType]
 
 
 def get_s3_params() -> BucketInfo:
@@ -230,13 +212,10 @@ def get_s3_params() -> BucketInfo:
         if config.has_section("aws") and config.has_option("aws", option):
             bucket = config.get("aws", option)
         else:
-            try:
-                # Get the bucket name from an environment variable
-                bucket = os.environ["CLOUDKNOT_S3_BUCKET"]
-            except KeyError:
-                # Use the fallback bucket b/c the cloudknot
-                # bucket environment variable is not set
-                bucket = "cloudknot-" + get_user().lower() + "-" + str(uuid.uuid4())
+            bucket = os.getenv(
+                "CLOUDKNOT_S3_BUCKET", # Get the bucket name from an environment variable
+                "cloudknot-" + get_user().lower() + "-" + str(uuid.uuid4()) # Use the fallback bucket b/c the cloudknot bucket environment variable is not set
+            )
 
             if policy is not None:
                 # In this case, the bucket name is new, but the policy is not.
@@ -246,17 +225,15 @@ def get_s3_params() -> BucketInfo:
         option = "s3-sse"
         if config.has_section("aws") and config.has_option("aws", option):
             sse = config.get("aws", option)
-            if sse not in {"AES256", "aws:kms", "None"}:
+            if sse not in (valid_sse_names := get_args(ServerSideEncryptionType) + ("None",)): # Check if the sse value is in ('AES256', 'aws:kms', 'aws:kms:dsse', 'None')
                 raise CloudknotInputError(
-                    'The server-side encryption option "sse" must must be '
-                    'one of ["AES256", "aws:kms", "None"]'
+                    f"The server-side encryption option `sse` must be one of {valid_sse_names}. You provided {sse}."
                 )
+            if sse == "None":
+                sse = None
         else:
             sse = None
-
-        if sse == "None":
-            sse = None
-
+        
         # Use set_s3_params to check for name availability
         # and write to config file
         bucket = bucket.replace("_", "-")  # S3 does not allow underscores
@@ -274,15 +251,16 @@ def get_s3_params() -> BucketInfo:
     # and then flatten to a single list
     response_policies = [response["Policies"] for response in response_iterator]
     policies = [lst for sublist in response_policies for lst in sublist]
+    
+    try:
+        aws_policies = {d["PolicyName"]: d["Arn"] for d in policies}
+    except KeyError:
+        raise CloudknotConfigurationError(f"All policiess in {policies} must have a 'PolicyName' and 'Arn' key.")
 
-    aws_policies = {d["PolicyName"]: d["Arn"] for d in policies}
-
-    policy_arn = aws_policies[policy]
-
-    return BucketInfo(bucket=bucket, policy=policy, policy_arn=policy_arn, sse=sse)
+    return BucketInfo(bucket=bucket, policy=policy, policy_arn=aws_policies[policy], sse=cast(ServerSideEncryptionType, sse))
 
 
-def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] = None):
+def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[ServerSideEncryptionType] = None):
     """Set the cloudknot S3 bucket.
 
     Set bucket by modifying the cloudknot config file
@@ -299,63 +277,30 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
         ['AES256', 'aws:kms'].
         Default: None
     """
-    match sse:
-        case None | "AES256" | "aws:kms":
-            pass
-        case _:
-            raise CloudknotInputError(
-                f"The server-side encryption option `sse` must be one of ['AES256', 'aws:kms']. You provided {sse}."
-            )
+    if sse not in (valid_sse_names := get_args(ServerSideEncryptionType)): # Check if the sse value is in ('AES256', 'aws:kms', 'aws:kms:dsse', 'None')
+        raise CloudknotInputError(
+                        f"The server-side encryption option `sse` must be one of {valid_sse_names}. You provided {sse}."
+                    )
 
     # Update the config file
     config_file = get_config_file()
     config = configparser.ConfigParser()
-
-    def test_bucket_put_get(bucket_: str, sse_: Optional[str] = None):
+    
+    bucket_call_args: dict[str, Any] = {"ServerSideEncryption": sse} if sse else {}
+    def test_bucket_put_get(
+        bucket_: str, sse_: Optional[ServerSideEncryptionType] = None
+    ):
+        
         key = "cloudnot-test-permissions-key"  # FIXME: Typo in word 'cloudnot'
-        try:
-            if sse_:
-                clients.s3.put_object(
-                    Bucket=bucket_,
-                    Body=b"test",
-                    Key=key,
-                    ServerSideEncryption=sse_,  # type: ignore
-                )
-            else:
-                clients.s3.put_object(Bucket=bucket_, Body=b"test", Key=key)
-            clients.s3.get_object(Bucket=bucket_, Key=key)
+        clients.s3.put_object(Bucket=bucket_, Key=key, Body=b"test", **bucket_call_args)
+        clients.s3.get_object(Bucket=bucket_, Key=key, **bucket_call_args)
+
+        except clients.s3.exceptions.ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            
+            mod_logger.debug(f"Got BucketAlreadyOwnedByYou exception for bucket {bucket}. Continuing.")
         except clients.s3.exceptions.BucketAlreadyExists:
-            raise CloudknotInputError(
-                "The requested bucket name already exists and you do not have permission to put or get objects in it."
-            )
-
-        with contextlib.suppress(Exception):
-            clients.s3.delete_object(Bucket=bucket_, Key=key)
-
-    with rlock:
-        config.read(config_file)
-
-        if not config.has_section("aws"):  # pragma: nocover
-            config.add_section("aws")
-
-        config.set("aws", "s3-bucket", bucket)
-
-        # Create the bucket
-        try:
-            if get_region() == "us-east-1":
-                clients.s3.create_bucket(Bucket=bucket)
-            else:
-                clients.s3.create_bucket(
-                    Bucket=bucket,
-                    CreateBucketConfiguration={
-                        "LocationConstraint": cast(
-                            BucketLocationConstraintType, get_region()
-                        )
-                    },
-                )
-        except clients.s3.exceptions.BucketAlreadyOwnedByYou:
-            pass
-        except clients.s3.exceptions.BucketAlreadyExists:
+            mod_logger.debug(f"Got BucketAlreadyExists exception for bucket {bucket}. Continuing with test_bucket_put_get().")
             test_bucket_put_get(bucket, sse)
         except clients.s3.exceptions.ClientError as e:
             # Check for Illegal Location Constraint
@@ -381,7 +326,7 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[str] 
             else:
                 # Pass exception to user
                 raise e
-
+d `
         # Add the cloudknot tags to the bucket
         clients.s3.put_bucket_tagging(
             Bucket=bucket,
@@ -785,18 +730,20 @@ and region.
 CLIENT_NAMES = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")
 
 c
-def create_clients(max_pool: int = 10, CLIENT_NAMES = ("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3")):
+
+
+def create_clients(
+    max_pool: int = 10,
+    CLIENT_NAMES=("batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3"),
+):
     """Refresh the boto3 clients dictionary."""
     config = botocore.config.Config(max_pool_connections=max_pool)
-    return { # type: ignore
+    return {  # type: ignore
         x: _make_client(x, config=config) for x in CLIENT_NAMES
     }
 
 
-
 clients = create_clients()
-
-        
 
 
 # noinspection PyPropertyAccess,PyAttributeOutsideInit

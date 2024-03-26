@@ -11,6 +11,8 @@ from . import (
     config,  # noqa
 )
 from .aws.base_classes import (  # noqa  # noqa  # noqa  # noqa
+    BucketInfo,
+    ProfileInfo,
     get_ecr_repo,
     get_profile,
     get_region,
@@ -21,8 +23,6 @@ from .aws.base_classes import (  # noqa  # noqa  # noqa  # noqa
     set_profile,
     set_region,
     set_s3_params,
-    ProfileInfo,
-    BucketInfo,
 )
 from .cloudknot import *  # noqa
 from .dockerimage import *  # noqa

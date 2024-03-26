@@ -8,8 +8,8 @@ import logging
 import os
 import tempfile
 from base64 import b64decode
-from string import Template
 from collections.abc import Callable, Collection, Iterable
+from string import Template
 from typing import Optional
 
 import botocore.exceptions

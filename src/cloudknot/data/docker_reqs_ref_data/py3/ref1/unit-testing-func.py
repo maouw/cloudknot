@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-import boto3
-import cloudpickle
 import os
 import pickle
 from argparse import ArgumentParser
 from functools import wraps
+
+import boto3
+import cloudpickle
 
 
 def pickle_to_s3(server_side_encryption=None, array_job=True):
@@ -63,11 +64,13 @@ def unit_testing_func(name=None, no_capitalize=False):
     clouknot.DockerImage
     """
     import sys  # noqa: F401
+
     import boto3.ec2  # noqa: F401
 
     if name:
-        from docker import api  # noqa: F401
         from os.path import join  # noqa: F401
+
+        from docker import api  # noqa: F401
 
         if not no_capitalize:
             import pytest as pt  # noqa: F401
@@ -76,8 +79,8 @@ def unit_testing_func(name=None, no_capitalize=False):
 
         return "Hello {0}!".format(name)
 
-    from six import binary_type as bt  # noqa: F401
     from dask.base import curry as dbc  # noqa: F401
+    from six import binary_type as bt  # noqa: F401
 
     return "Hello world!"
 

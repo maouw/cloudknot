@@ -1,9 +1,8 @@
+import configparser
 import logging
 import os
 from base64 import b64decode
 
-import configparser
-from .base import Base
 import botocore
 import botocore.exceptions
 import docker
@@ -15,13 +14,14 @@ from ..aws import (
     get_ecr_repo,
     get_profile,
     get_region,
+    list_profiles,
     refresh_clients,
     set_ecr_repo,
     set_profile,
     set_region,
-    list_profiles,
 )
 from ..config import add_resource, rlock
+from .base import Base
 
 module_logger = logging.getLogger(__name__)
 

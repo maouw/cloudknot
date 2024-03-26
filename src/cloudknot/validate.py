@@ -3,7 +3,6 @@
 import typing
 from typing import Any
 
-
 __all__ = ["box_iterable"]
 
 

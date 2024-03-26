@@ -33,9 +33,12 @@ dependencies = [
 "Homepage" = "https://nrdg.github.io/cloudknot"
 "Source" = "https://github.com/nrdg/cloudknot"
 
+#ClientNameType = Literal["batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3"]
+
 [project.optional-dependencies]
 dev = [
-    "boto3-stubs[essential,batch,ecs,ecr,iam]>=1.34.65,<2",
+    "boto3-stubs>=1.34.65,<2",
+    "boto3-stubs[batch,cloudformation,ec2,ecr,ecs,iam,s3]>=1.34.65,<2",
     "coverage>=7.4.4,<8",
     "moto[cloudformation]==4.1.5",
     "pre-commit>=3.6.2,<4",
@@ -144,3 +147,13 @@ extend-ignore = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
+
+[tool.pyright]
+include = ["src"]
+exclude = ["examples"]
+defineConstant = { DEBUG = true }
+stubPath = ".stubs"
+reportMissingImports = true
+reportMissingTypeStubs = true
+pythonVersion = "3.10"
+pythonPlatform = "Linux"
