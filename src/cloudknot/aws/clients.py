@@ -11,7 +11,6 @@ from mypy_boto3_ecr import ECRClient
 from mypy_boto3_ecs import ECSClient
 from mypy_boto3_iam import IAMClient
 from mypy_boto3_s3 import S3Client
-from wrapt.decorators import synchronized
 from .base_classes import get_profile, get_region
 
 from threading import RLock
@@ -22,33 +21,71 @@ mod_logger = logging.getLogger(__name__)
 
 ClientNameType = Literal["batch", "cloudformation", "ecr", "ecs", "ec2", "iam", "s3"]
 
+
 class CloudknotClients:
     """Holds all the boto3 clients used by cloudknot."""
 
     def __init__(self, max_pool_connections: int = 10):
         self._max_pool_connections = max_pool_connections
-        self._client_locks = {client_name: RLock() for client_name in get_args(ClientNameType)}
+        self._client_locks = {
+            client_name: RLock() for client_name in get_args(ClientNameType)
+        }
 
     @overload
-    def _make_client(self, service_name: Literal["batch"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> BatchClient: ...
+    def _make_client(
+        self,
+        service_name: Literal["batch"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> BatchClient: ...
 
     @overload
-    def _make_client(self, service_name: Literal["cloudformation"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> CloudFormationClient: ...
+    def _make_client(
+        self,
+        service_name: Literal["cloudformation"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> CloudFormationClient: ...
 
     @overload
-    def _make_client(self, service_name: Literal["ecr"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> ECRClient: ...
+    def _make_client(
+        self,
+        service_name: Literal["ecr"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> ECRClient: ...
 
     @overload
-    def _make_client(self, service_name: Literal["ecs"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> ECSClient: ...
+    def _make_client(
+        self,
+        service_name: Literal["ecs"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> ECSClient: ...
 
     @overload
-    def _make_client(self, service_name: Literal["ec2"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> EC2Client: ...
+    def _make_client(
+        self,
+        service_name: Literal["ec2"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> EC2Client: ...
 
     @overload
-    def _make_client(self, service_name: Literal["iam"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> IAMClient: ...
+    def _make_client(
+        self,
+        service_name: Literal["iam"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> IAMClient: ...
 
     @overload
-    def _make_client(self, service_name: Literal["s3"], session: Optional[boto3.Session] = None, config: Optional[botocore.config.Config] = None) -> S3Client: ...
+    def _make_client(
+        self,
+        service_name: Literal["s3"],
+        session: Optional[boto3.Session] = None,
+        config: Optional[botocore.config.Config] = None,
+    ) -> S3Client: ...
 
     def _make_client(
         self,
@@ -58,11 +95,14 @@ class CloudknotClients:
     ):
         """Make a boto3 client."""
         mod_logger.debug(f"Creating boto3 client for {service_name}")
-        session = session or boto3.session.Session(profile_name=get_profile(fallback=None), region_name=get_region())
+        session = session or boto3.session.Session(
+            profile_name=get_profile(fallback=None), region_name=get_region()
+        )
         return session.client(
             service_name,
             region_name=get_region(),
-            config=config or botocore.config.Config(max_pool_connections=self._max_pool_connections),
+            config=config
+            or botocore.config.Config(max_pool_connections=self._max_pool_connections),
         )
 
     @cached_property
@@ -118,7 +158,11 @@ class CloudknotClients:
     def refresh(self, create_all: bool = False):
         """Reset and refresh all clients."""
         self.reset()
-        to_create = get_args(ClientNameType) if create_all else self.__dict__.keys() & get_args(ClientNameType)
+        to_create = (
+            get_args(ClientNameType)
+            if create_all
+            else self.__dict__.keys() & get_args(ClientNameType)
+        )
         for client_name in to_create:
             with self._client_locks[client_name]:
                 mod_logger.debug(f"Creating boto3 client for {client_name}")

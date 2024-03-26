@@ -233,7 +233,7 @@ def get_s3_params() -> BucketInfo:
                 sse = None
         else:
             sse = None
-        
+
         # Use set_s3_params to check for name availability
         # and write to config file
         bucket = bucket.replace("_", "-")  # S3 does not allow underscores
@@ -251,7 +251,7 @@ def get_s3_params() -> BucketInfo:
     # and then flatten to a single list
     response_policies = [response["Policies"] for response in response_iterator]
     policies = [lst for sublist in response_policies for lst in sublist]
-    
+
     try:
         aws_policies = {d["PolicyName"]: d["Arn"] for d in policies}
     except KeyError:
@@ -285,19 +285,19 @@ def set_s3_params(bucket: str, policy: Optional[str] = None, sse: Optional[Serve
     # Update the config file
     config_file = get_config_file()
     config = configparser.ConfigParser()
-    
+
     bucket_call_args: dict[str, Any] = {"ServerSideEncryption": sse} if sse else {}
     def test_bucket_put_get(
         bucket_: str, sse_: Optional[ServerSideEncryptionType] = None
     ):
-        
+
         key = "cloudnot-test-permissions-key"  # FIXME: Typo in word 'cloudnot'
         clients.s3.put_object(Bucket=bucket_, Key=key, Body=b"test", **bucket_call_args)
         clients.s3.get_object(Bucket=bucket_, Key=key, **bucket_call_args)
 
         except clients.s3.exceptions.ClientError as e:
             error_code = e.response["Error"]["Code"]
-            
+
             mod_logger.debug(f"Got BucketAlreadyOwnedByYou exception for bucket {bucket}. Continuing.")
         except clients.s3.exceptions.BucketAlreadyExists:
             mod_logger.debug(f"Got BucketAlreadyExists exception for bucket {bucket}. Continuing with test_bucket_put_get().")
