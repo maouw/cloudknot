@@ -569,6 +569,7 @@ class DockerImage(aws.NamedObject):
                         pickle_protocol=DEFAULT_PICKLE_PROTOCOL,
                     )
                 )
+        os.chmod(self.script_path, 0o755)
 
         mod_logger.info(
             "Wrote python function {func:s} to script {script:s}".format(
